@@ -230,7 +230,18 @@ class Tools {
           error: `old_text not found. Best match at line ${bestLine} (${Math.round(bestScore * 100)}% similar). Re-read that section first.`,
         });
       }
-      await fs.writeFile(filePath, current.replace(oldContent, newContent));
+
+      const occurrences = current.split(oldContent).length - 1;
+      if (occurrences > 1) {
+        return JSON.stringify({
+          success: false,
+          error: `oldContent appears ${occurrences} times — the edit is ambiguous. Include more surrounding context so it matches exactly one location.`,
+        });
+      }
+
+      // split/join instead of String.replace so $-sequences in newContent
+      // (e.g. $&, $1) are inserted literally rather than interpreted.
+      await fs.writeFile(filePath, current.split(oldContent).join(newContent));
       return JSON.stringify({
         success: true,
         data: `File ${filePath} edited successfully.`,
@@ -335,19 +346,69 @@ class Tools {
       return JSON.stringify({ success: false, error: validation.error });
     }
 
+    if (!query || typeof query !== "string") {
+      return JSON.stringify({
+        success: false,
+        error: "query must be a non-empty string",
+      });
+    }
+
+    const MAX_MATCHES = 50;
+    const needle = query.toLowerCase();
+    const matches: { file: string; line: number; content: string }[] = [];
+
+    const searchFile = async (fp: string) => {
+      let content: string;
+      try {
+        content = await fs.readFile(fp, "utf-8");
+      } catch {
+        return; // unreadable/binary file — skip
+      }
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length && matches.length < MAX_MATCHES; i++) {
+        if (lines[i].toLowerCase().includes(needle)) {
+          matches.push({
+            file: path.relative(process.cwd(), fp) || fp,
+            line: i + 1,
+            content: lines[i].slice(0, 200),
+          });
+        }
+      }
+    };
+
+    const walk = async (dir: string) => {
+      if (matches.length >= MAX_MATCHES) return;
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (matches.length >= MAX_MATCHES) break;
+        if (IGNORE_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else {
+          await searchFile(full);
+        }
+      }
+    };
+
     try {
-      const content = await fs.readFile(filePath, "utf-8");
-      const matches = content
-        .split("\n")
-        .map((line, i) => ({ line: i + 1, content: line }))
-        .filter(({ content }) =>
-          content.toLowerCase().includes(query.toLowerCase()),
-        );
+      const stat = await fs.stat(filePath);
+      if (stat.isDirectory()) {
+        await walk(filePath);
+      } else {
+        await searchFile(filePath);
+      }
 
       return JSON.stringify({
         success: true,
         total: matches.length,
-        matches: matches.slice(0, 20),
+        truncated: matches.length >= MAX_MATCHES,
+        matches,
       });
     } catch (error: any) {
       return JSON.stringify({ success: false, error: error.message });

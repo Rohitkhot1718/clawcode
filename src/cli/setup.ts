@@ -80,9 +80,16 @@ async function addModelFlow() {
       message: "Model ID (e.g. meta-llama/llama-3.1-8b)",
     },
     { type: "input", name: "name", message: "Display name" },
+    {
+      type: "input",
+      name: "contextLimit",
+      message: "Context window size in tokens",
+      initial: "128000",
+    },
   ]);
   if (!modelRes) return;
-  const { model, name } = modelRes as any;
+  const { model, name, contextLimit } = modelRes as any;
+  const parsedContextLimit = Number(contextLimit);
 
   const spinner = ora("Validating...").start();
   try {
@@ -101,7 +108,15 @@ async function addModelFlow() {
   await saveConfig({
     default: model,
     ...(apiKey && { keys: { [provider]: apiKey } }),
-    models: [{ id: model, name, provider, model }],
+    models: [
+      {
+        id: model,
+        name,
+        provider,
+        model,
+        ...(parsedContextLimit > 0 ? { contextLimit: parsedContextLimit } : {}),
+      },
+    ],
   });
 
   console.log(`\n✔ Model "${name}" added\n`);

@@ -20,10 +20,12 @@
     "commander": "^14.0.3",
     "dotenv": "^17.4.0",
     "enquirer": "^2.4.1",
+    "figlet": "^1.11.0",
     "openai": "^6.33.0",
     "ora": "^7.0.1"
   },
   "devDependencies": {
+    "@types/figlet": "^1.7.0",
     "@types/node": "^25.5.0",
     "copyfiles": "^2.4.1",
     "ts-node": "^10.9.2",

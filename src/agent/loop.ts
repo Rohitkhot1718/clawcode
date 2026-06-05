@@ -24,6 +24,39 @@ const toolsMap: any = {
   getLineCount: (args: any) => tools.getLineCount(args),
 };
 
+// Short, human-readable summary of what a tool call is actually doing, e.g.
+// `runCommand npm install` or `grep "foo" in src`. Shown next to the spinner.
+function describeToolCall(toolName: string, args: any): string {
+  const clip = (s: any, n = 60) => {
+    const str = String(s ?? "");
+    return str.length > n ? str.slice(0, n) + "…" : str;
+  };
+
+  switch (toolName) {
+    case "runCommand":
+    case "startBackground":
+      return `${toolName} ${clip(args.command)}`;
+    case "createFile":
+    case "readFile":
+    case "editFile":
+    case "getLineCount":
+      return `${toolName} ${clip(args.filePath)}`;
+    case "listDirectory":
+      return `${toolName} ${clip(args.dirPath)}`;
+    case "grep":
+      return `${toolName} "${clip(args.query, 40)}" in ${clip(args.filePath)}`;
+    case "webSearch":
+      return `${toolName} "${clip(args.query)}"`;
+    case "fetchURL":
+      return `${toolName} ${clip(args.url)}`;
+    case "readProcessOutput":
+    case "stopProcess":
+      return `${toolName} ${clip(args.id)}`;
+    default:
+      return toolName;
+  }
+}
+
 class AgentLoop {
   private provider: any;
   private messages: any[] = [];
@@ -33,14 +66,19 @@ class AgentLoop {
   private initialized = false;
   private currentProvider = "";
   private currentModel = "";
-  private readonly MAX_TOKENS = 8000;
+  private MAX_TOKENS = 128000;
   private readonly TOKEN_COMPRESSION_THRESHOLD = 0.8;
 
   async run(
     userInput: string,
     provider: string,
     model: string,
+    contextLimit?: number,
   ): Promise<string> {
+    if (contextLimit && contextLimit > 0) {
+      this.MAX_TOKENS = contextLimit;
+    }
+
     if (!this.initialized) {
       this.systemPrompt = await buildSystemPrompt();
       this.summaryPrompt = await buildSummaryPrompt();
@@ -130,9 +168,7 @@ class AgentLoop {
           if (args.previousStepContent)
             console.log("\n", chalk.white(args.previousStepContent || ""));
 
-          if (toolName === "runCommand") {
-            console.log("", chalk.gray(args.command));
-          }
+          const label = describeToolCall(toolName, args);
 
           if (!toolFunc) {
             this.messages.push({
@@ -145,7 +181,7 @@ class AgentLoop {
           }
 
           const spinner = ora({
-            text: `🛠 ${toolName}`,
+            text: `🛠 ${chalk.gray(label)}`,
             color: "yellow",
           }).start();
 
@@ -164,14 +200,14 @@ class AgentLoop {
               });
             }
 
-            spinner.succeed(`🛠 ${toolName} done \n`);
+            spinner.succeed(`🛠 ${chalk.gray(label)}\n`);
           } catch (err: any) {
             const errorMsg = err?.message || "Unknown error";
             result = JSON.stringify({
               success: false,
               error: `Tool execution failed: ${errorMsg}`,
             });
-            spinner.fail(`${toolName} failed: ${errorMsg}`);
+            spinner.fail(`${chalk.gray(label)} failed: ${errorMsg}`);
           }
 
           const MAX_CHARS: Record<string, number> = {
@@ -342,8 +378,19 @@ class AgentLoop {
       return;
     }
 
-    const toSummarize = nonSystem.slice(0, -keep);
-    const recent = nonSystem.slice(-keep);
+    // Find a safe cut point: `recent` must not start with an orphaned `tool`
+    // message whose parent assistant tool_calls got summarized away (the API
+    // rejects a tool message that doesn't follow its matching tool_calls).
+    let splitIndex = nonSystem.length - keep;
+    while (
+      splitIndex < nonSystem.length &&
+      nonSystem[splitIndex].role === "tool"
+    ) {
+      splitIndex++;
+    }
+
+    const toSummarize = nonSystem.slice(0, splitIndex);
+    const recent = nonSystem.slice(splitIndex);
 
     console.log(chalk.cyan(`📝 Summarizing ${toSummarize.length} messages...`));
     const summary = await this.summarizeMessages(toSummarize);

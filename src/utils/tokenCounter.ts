@@ -5,7 +5,17 @@ export function estimateTokens(text: string): number {
 export function estimateMessagesTokens(messages: any[]): number {
   let total = 0;
   for (const msg of messages) {
-    total += estimateTokens(msg.content || "");
+    total += estimateTokens(typeof msg.content === "string" ? msg.content : "");
+
+    // Tool call payloads (function name + JSON arguments) also cost tokens and
+    // can dominate a coding session, so count them too.
+    if (Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        total += estimateTokens(tc.function?.name || "");
+        total += estimateTokens(tc.function?.arguments || "");
+      }
+    }
+
     total += 4;
   }
   return total;

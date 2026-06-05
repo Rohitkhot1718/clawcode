@@ -78,6 +78,7 @@ class CLICommands {
     provider: string,
     model: string,
     name?: string,
+    contextLimit?: number,
   ): Promise<void> {
     const config = await loadConfig();
     if (!config) {
@@ -129,6 +130,7 @@ class CLICommands {
       name: name || model,
       provider: provider as (typeof PROVIDERS)[number],
       model,
+      ...(contextLimit && contextLimit > 0 ? { contextLimit } : {}),
     };
 
     await saveConfig({
@@ -347,7 +349,7 @@ class CLICommands {
       return;
     }
     try {
-      await agent.run(input, provider, model);
+      await agent.run(input, provider, model, selectedModel.contextLimit);
     } catch (err: any) {
       console.log("Failed to execute:");
       console.log(err?.message || err);

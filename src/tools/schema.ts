@@ -184,13 +184,14 @@ export const toolSchemas: any[] = [
     function: {
       name: "grep",
       description:
-        "Search for a string inside a file and return matching lines with line numbers. Use this instead of reading the whole file when looking for specific content.",
+        "Search for a string in a file OR recursively across a directory, returning matching lines with their file path and line number. Pass a directory to search the whole codebase. Use this instead of reading whole files when looking for specific content.",
       parameters: {
         type: "object",
         properties: {
           filePath: {
             type: "string",
-            description: "Absolute or relative path to the file",
+            description:
+              "Path to a file or a directory. A directory is searched recursively (ignoring node_modules, .git, dist, etc.).",
           },
           query: {
             type: "string",

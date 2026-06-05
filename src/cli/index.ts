@@ -26,9 +26,15 @@ program
   .requiredOption("--provider <provider>", "Provider name")
   .requiredOption("--model <model>", "Model ")
   .option("--name <name>", "Display name")
+  .option("--context <tokens>", "Context window size in tokens")
   .action(async (options) => {
-    const { provider, model, name } = options;
-    await cliCommands.addModel(provider, model, name);
+    const { provider, model, name, context } = options;
+    await cliCommands.addModel(
+      provider,
+      model,
+      name,
+      context ? Number(context) : undefined,
+    );
   });
 
 program

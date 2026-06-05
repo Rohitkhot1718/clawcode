@@ -6,8 +6,17 @@ import chalk from "chalk";
 import { checkConfig, switchModel, configWizard } from "./src/cli/setup.js";
 import { getModel } from "./src/config/index.js";
 import { program } from "./src/cli/index.js";
+import { printBanner, modelLine } from "./src/cli/banner.js";
 
 dotenv.config();
+
+async function getActiveModel(): Promise<any | null> {
+  try {
+    return await getModel();
+  } catch {
+    return null;
+  }
+}
 
 function createReadlineInterface() {
   return readline.createInterface({
@@ -29,6 +38,7 @@ async function startREPL(rl: any) {
       if (trimmedInput === "/model") {
         rl.close();
         await switchModel();
+        console.log(modelLine(await getActiveModel()) + "\n");
         const newRl = createReadlineInterface();
         startREPL(newRl);
         newRl.prompt();
@@ -38,6 +48,7 @@ async function startREPL(rl: any) {
       if (trimmedInput === "/config") {
         rl.close();
         await configWizard();
+        console.log(modelLine(await getActiveModel()) + "\n");
         const newRl = createReadlineInterface();
         startREPL(newRl);
         newRl.prompt();
@@ -51,9 +62,10 @@ async function startREPL(rl: any) {
       }
 
       if (trimmedInput === "/help") {
+        console.log(modelLine(await getActiveModel()));
         console.log(
           chalk.gray(
-            "\n /config → add new model  /model → switch model\n  /exit  → quit  /help  → show commands\n",
+            "\n  /config → add new model   /model → switch model\n  /exit   → quit            /help  → show commands\n",
           ),
         );
         isProcessing = false;
@@ -61,8 +73,13 @@ async function startREPL(rl: any) {
         return;
       }
 
-      const { provider, model }: any = await getModel();
-      await agent.run(trimmedInput, provider, model);
+      const selectedModel: any = await getModel();
+      await agent.run(
+        trimmedInput,
+        selectedModel.provider,
+        selectedModel.model,
+        selectedModel.contextLimit,
+      );
       console.log();
     } catch (err) {
       console.error(chalk.red("Error:"), err);
@@ -85,9 +102,9 @@ async function main() {
     return;
   }
 
-  console.log(chalk.bold.cyan("Welcome to Clawcode! 🦀"));
-
   await checkConfig();
+
+  printBanner(await getActiveModel());
 
   const rl = createReadlineInterface();
   await startREPL(rl);

@@ -89,25 +89,38 @@ export const toolSchemas: any[] = [
     type: "function",
     function: {
       name: "editFile",
-      description: "Edit a file by replacing old content with new content",
+      description:
+        'Edit a file using EITHER (a) oldContent/newContent — oldContent must match the file\'s text exactly, or (b) startLine/endLine — replace a 1-based inclusive line range using the line numbers shown by readFile, with no exact text matching needed. Prefer startLine/endLine whenever you are adding, removing, or replacing whole lines (e.g. "keep only the first line", "add a line at the end") since it cannot fail on whitespace or content mismatches. Pass newContent as an empty string to delete.',
       parameters: {
         type: "object",
         properties: {
           filePath: { type: "string" },
-          oldContent: { type: "string" },
-          newContent: { type: "string" },
+          oldContent: {
+            type: "string",
+            description:
+              "Exact text to find and replace. Omit this if using startLine/endLine instead.",
+          },
+          startLine: {
+            type: "number",
+            description:
+              "1-based line to start at (inclusive). To INSERT without replacing anything (including appending at the end), set endLine to startLine - 1 — e.g. to append to a file with N lines, use startLine=N+1, endLine=N.",
+          },
+          endLine: {
+            type: "number",
+            description:
+              "1-based line to stop at (inclusive). Use with startLine instead of oldContent.",
+          },
+          newContent: {
+            type: "string",
+            description: "Replacement or inserted text. Empty string deletes the matched content/lines.",
+          },
           previousStepContent: {
             type: "string",
             description:
               "A natural, conversational summary of the previous task or the current step.",
           },
         },
-        required: [
-          "filePath",
-          "oldContent",
-          "newContent",
-          "previousStepContent",
-        ],
+        required: ["filePath", "newContent", "previousStepContent"],
       },
     },
   },

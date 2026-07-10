@@ -48,6 +48,95 @@ function validateFilePath(filePath: string): {
   return { valid: true };
 }
 
+const trimLine = (l: string) => l.trim();
+const collapseWs = (l: string) => l.replace(/\s+/g, " ").trim();
+
+function findNormalizedMatch(
+  current: string,
+  oldContent: string,
+  normalizeLine: (l: string) => string,
+): string | null {
+  const eol = current.includes("\r\n") ? "\r\n" : "\n";
+  const fileLines = current.split(/\r?\n/);
+  const oldLines = oldContent.split(/\r?\n/).map(normalizeLine);
+
+  for (let i = 0; i <= fileLines.length - oldLines.length; i++) {
+    let match = true;
+    for (let j = 0; j < oldLines.length; j++) {
+      if (normalizeLine(fileLines[i + j]) !== oldLines[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return fileLines.slice(i, i + oldLines.length).join(eol);
+    }
+  }
+  return null;
+}
+
+function closestRegion(
+  current: string,
+  oldContent: string,
+): { line: number; text: string } | null {
+  const fileLines = current.split(/\r?\n/);
+  const oldLines = oldContent.split(/\r?\n/).map(collapseWs);
+  const size = Math.min(oldLines.length, fileLines.length);
+  if (size === 0) return null;
+
+  let bestHits = 0;
+  let bestIndex = -1;
+  for (let i = 0; i <= fileLines.length - size; i++) {
+    let hits = 0;
+    for (let j = 0; j < size; j++) {
+      if (collapseWs(fileLines[i + j]) === oldLines[j]) hits++;
+    }
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestIndex = i;
+    }
+  }
+  if (bestIndex < 0) return null;
+
+  const text = fileLines.slice(bestIndex, bestIndex + Math.min(size, 10)).join("\n");
+  return { line: bestIndex + 1, text: text.slice(0, 600) };
+}
+
+function resolveEditMatch(
+  current: string,
+  oldContent: string,
+  newContent: string,
+): { old: string; next: string } {
+  // Whatever path matches, the inserted text always uses the file's own
+  // line-ending style — otherwise edits create mixed CRLF/LF files.
+  const eol = current.includes("\r\n") ? "\r\n" : "\n";
+  const next = newContent.replace(/\r?\n/g, eol);
+
+  if (current.includes(oldContent)) {
+    return { old: oldContent, next };
+  }
+
+  const crlf = oldContent.replace(/\r?\n/g, "\r\n");
+  if (current.includes(crlf)) {
+    return { old: crlf, next };
+  }
+  const lf = oldContent.replace(/\r\n/g, "\n");
+  if (current.includes(lf)) {
+    return { old: lf, next };
+  }
+
+  // Tier 4: ignore leading/trailing whitespace per line.
+  // Tier 5: also collapse internal whitespace runs ("Hello  World").
+  const found =
+    findNormalizedMatch(current, oldContent, trimLine) ??
+    findNormalizedMatch(current, oldContent, collapseWs);
+  if (found) {
+    return { old: found, next };
+  }
+
+  return { old: oldContent, next };
+}
+
 function validateCommand(command: string): { valid: boolean; error?: string } {
   if (!command || typeof command !== "string") {
     return { valid: false, error: "Invalid command" };
@@ -74,9 +163,6 @@ class Tools {
     const TIMEOUT_MS = 120_000;
 
     return new Promise((resolve) => {
-      // stdin "ignore": a command that waits for interactive input (e.g. a
-      // `del` folder confirmation) gets immediate EOF instead of hanging the
-      // agent forever on a pipe nothing writes to.
       const child = spawn(command, {
         shell: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -180,7 +266,9 @@ class Tools {
 
     try {
       const content = await fs.readFile(filePath, "utf-8");
-      const lines = content.split("\n");
+      // Split on \r?\n so CRLF files don't leak invisible \r into the
+      // numbered lines the model copies back into editFile.
+      const lines = content.split(/\r?\n/);
       const total = lines.length;
       const start = Math.max(0, offset - 1);
       const end = Math.min(start + limit, total);
@@ -222,64 +310,156 @@ class Tools {
     filePath,
     oldContent,
     newContent,
+    startLine,
+    endLine,
   }: {
     filePath: string;
-    oldContent: string;
+    oldContent?: string;
     newContent: string;
+    startLine?: number;
+    endLine?: number;
   }): Promise<string> {
     const validation = validateFilePath(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
 
-    if (!oldContent || !newContent) {
+    if (typeof newContent !== "string") {
       return JSON.stringify({
         success: false,
-        error: "oldContent and newContent are required",
+        error: 'newContent must be a string (use "" to delete the matched text)',
+      });
+    }
+
+    const hasLineRange = startLine != null || endLine != null;
+    if (oldContent && hasLineRange) {
+      return JSON.stringify({
+        success: false,
+        error:
+          "Provide EITHER oldContent OR startLine/endLine, not both.",
+      });
+    }
+    if (!oldContent && !hasLineRange) {
+      return JSON.stringify({
+        success: false,
+        error:
+          "Provide oldContent (text to replace) OR startLine and endLine (1-based, inclusive — from readFile's line numbers).",
       });
     }
 
     try {
       const current = await fs.readFile(filePath, "utf-8");
-      if (!current.includes(oldContent)) {
-        const lines = current.split("\n");
-        const oldLines = oldContent.split("\n");
-        let bestScore = 0,
-          bestLine = 0;
-        for (let i = 0; i <= lines.length - oldLines.length; i++) {
-          const window = lines.slice(i, i + oldLines.length).join("\n");
-          const score =
-            window.split("").filter((c, j) => c === oldContent[j]).length /
-            oldContent.length;
-          if (score > bestScore) {
-            bestScore = score;
-            bestLine = i + 1;
-          }
-        }
-        return JSON.stringify({
-          success: false,
-          error: `old_text not found. Best match at line ${bestLine} (${Math.round(bestScore * 100)}% similar). Re-read that section first.`,
-        });
+
+      if (hasLineRange) {
+        return this.editByLineRange(filePath, current, startLine, endLine, newContent);
       }
 
-      const occurrences = current.split(oldContent).length - 1;
-      if (occurrences > 1) {
-        return JSON.stringify({
-          success: false,
-          error: `oldContent appears ${occurrences} times — the edit is ambiguous. Include more surrounding context so it matches exactly one location.`,
-        });
-      }
-
-      // split/join instead of String.replace so $-sequences in newContent
-      // (e.g. $&, $1) are inserted literally rather than interpreted.
-      await fs.writeFile(filePath, current.split(oldContent).join(newContent));
-      return JSON.stringify({
-        success: true,
-        data: `File ${filePath} edited successfully.`,
-      });
+      return this.editByContent(filePath, current, oldContent!, newContent);
     } catch (error: any) {
       return JSON.stringify({ success: false, error: error.message });
     }
+  }
+
+  private async editByLineRange(
+    filePath: string,
+    current: string,
+    startLine: number | undefined,
+    endLine: number | undefined,
+    newContent: string,
+  ): Promise<string> {
+    const eol = current.includes("\r\n") ? "\r\n" : "\n";
+    const lines = current.split(/\r?\n/);
+    const total = lines.length;
+
+    const valid =
+      Number.isInteger(startLine) &&
+      Number.isInteger(endLine) &&
+      startLine! >= 1 &&
+      startLine! <= total + 1 &&
+      endLine! >= startLine! - 1 &&
+      endLine! <= total;
+
+    if (!valid) {
+      return JSON.stringify({
+        success: false,
+        error: `Invalid range for a ${total}-line file. startLine must be 1-${total + 1}, endLine must be ${"startLine-1 (to insert) or between startLine and " + total}. To append, use startLine=${total + 1}, endLine=${total}.`,
+      });
+    }
+
+    const before = lines.slice(0, startLine! - 1);
+    const after = lines.slice(endLine!);
+    const removedLines = lines.slice(startLine! - 1, endLine!);
+    const replacement =
+      newContent === "" ? [] : newContent.replace(/\r?\n/g, eol).split(eol);
+
+    await fs.writeFile(filePath, [...before, ...replacement, ...after].join(eol));
+
+    const isInsertion = endLine === startLine! - 1;
+    return JSON.stringify({
+      success: true,
+      data: isInsertion
+        ? `File ${filePath} edited: inserted content before line ${startLine} (file had ${total} lines).`
+        : `File ${filePath} edited: replaced lines ${startLine}-${endLine} (of ${total}).`,
+      diff: { old: removedLines.join("\n"), new: newContent },
+    });
+  }
+
+  private async editByContent(
+    filePath: string,
+    current: string,
+    oldContent: string,
+    newContent: string,
+  ): Promise<string> {
+    const { old, next } = resolveEditMatch(current, oldContent, newContent);
+
+    if (!current.includes(old)) {
+      if (/^\s*\d+\|\s/m.test(oldContent)) {
+        return JSON.stringify({
+          success: false,
+          error:
+            'Your oldContent contains the "N| " line-number prefixes from readFile output. Those are display-only and not part of the file — send the raw text without them.',
+        });
+      }
+
+      const lines = current.split(/\r?\n/);
+      const oldLines = oldContent.split(/\r?\n/);
+
+      if (oldLines.length > lines.length) {
+        return JSON.stringify({
+          success: false,
+          error: `oldContent has ${oldLines.length} lines but the file only has ${lines.length}. You likely included readFile decorations like the "(End of file...)" hint — send only raw file text. For adding/removing whole lines, prefer startLine/endLine instead of oldContent — it avoids this mistake entirely.`,
+        });
+      }
+
+      const region = closestRegion(current, oldContent);
+      if (region) {
+        return JSON.stringify({
+          success: false,
+          error: `old_text not found. The closest region starts at line ${region.line} and its EXACT content is:\n${region.text}\nRetry using this text verbatim as oldContent, or switch to startLine/endLine instead.`,
+        });
+      }
+
+      return JSON.stringify({
+        success: false,
+        error:
+          "old_text not found anywhere in the file — it may be from a different file or an outdated read. Re-read the file and use its current content.",
+      });
+    }
+
+    const occurrences = current.split(old).length - 1;
+    if (occurrences > 1) {
+      return JSON.stringify({
+        success: false,
+        error: `oldContent appears ${occurrences} times — the edit is ambiguous. Include more surrounding context, or use startLine/endLine to target one location.`,
+      });
+    }
+
+    await fs.writeFile(filePath, current.split(old).join(next));
+    return JSON.stringify({
+      success: true,
+      data: `File ${filePath} edited successfully.`,
+      diff: { old, new: next },
+    });
   }
 
   processes = new Map<string, { pid: number; output: string }>();

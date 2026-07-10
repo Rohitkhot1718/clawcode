@@ -10,6 +10,7 @@ import {
   calculateTokenBudget,
 } from "../utils/tokenCounter.js";
 import { permissions } from "./permissions.js";
+import { renderDiff } from "../utils/renderdiff.js";
 
 const toolsMap: any = {
   runCommand: (args: any) => tools.runCommand(args),
@@ -26,8 +27,7 @@ const toolsMap: any = {
   getLineCount: (args: any) => tools.getLineCount(args),
 };
 
-// Friendly display names for the terminal (the model still sees the real
-// tool names). Rendered Claude Code-style: `Create(src/App.jsx)`.
+
 const TOOL_LABELS: Record<string, string> = {
   runCommand: "Shell",
   startBackground: "Background",
@@ -43,8 +43,6 @@ const TOOL_LABELS: Record<string, string> = {
   stopProcess: "Stop",
 };
 
-// Absolute paths inside the project render as short relative ones:
-// C:\...\clawcode\todo\client\src\App.jsx -> todo\client\src\App.jsx
 function displayPath(p: any): string {
   const str = String(p ?? "");
   try {
@@ -57,10 +55,6 @@ function displayPath(p: any): string {
   return str;
 }
 
-// Detects a model mistake small models make: writing the tool arguments as
-// a JSON text reply (optionally fenced) instead of actually calling the
-// tool. Only matches when the ENTIRE message is one JSON object with
-// tool-ish keys, so ordinary answers that merely contain JSON don't trip it.
 export function looksLikeTextToolCall(content: string): boolean {
   const trimmed = String(content ?? "").trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
@@ -87,8 +81,6 @@ export function looksLikeTextToolCall(content: string): boolean {
   }
 }
 
-// Short, human-readable summary of what a tool call is actually doing, e.g.
-// `Shell(npm install)` or `Search("foo" in src)`. Shown next to the spinner.
 function describeToolCall(toolName: string, args: any): string {
   const clip = (s: any, n = 60) => {
     const str = String(s ?? "");
@@ -288,7 +280,9 @@ class AgentLoop {
 
           const decision = await permissions.check(toolName, args, label);
           if (decision.behavior === "deny") {
-            console.log(`${chalk.red("●")} ${chalk.gray(label)} — denied by user\n`);
+            console.log(
+              `${chalk.red("●")} ${chalk.gray(label)} — denied by user\n`,
+            );
             this.messages.push({
               role: "tool",
               tool_call_id: toolCall.id,
@@ -311,8 +305,9 @@ class AgentLoop {
             const raw = await toolFunc(args);
             result = typeof raw === "string" ? raw : JSON.stringify(raw);
 
+            let parsed: any = null;
             try {
-              JSON.parse(result);
+              parsed = JSON.parse(result);
             } catch {
               result = JSON.stringify({
                 success: false,
@@ -320,20 +315,29 @@ class AgentLoop {
               });
             }
 
-            if (toolName === "createFile" && args.filePath) {
-              try {
-                if (JSON.parse(result)?.success) {
-                  permissions.markCreated(args.filePath);
-                }
-              } catch {
-                // unparseable result — don't mark
-              }
+
+            const succeeded = parsed !== null && parsed?.success !== false;
+
+            if (succeeded && toolName === "createFile" && args.filePath) {
+              permissions.markCreated(args.filePath);
             }
 
             spinner.stopAndPersist({
-              symbol: chalk.green("●"),
-              text: `${chalk.gray(label)}\n`,
+              symbol: succeeded ? chalk.green("●") : chalk.red("●"),
+              text: succeeded
+                ? `${chalk.gray(label)}\n`
+                : `${chalk.gray(label)} — ${String(parsed?.error ?? "failed").split("\n")[0]}\n`,
             });
+
+            if (succeeded && toolName === "createFile") {
+              console.log(renderDiff("", args.content, 20) + "\n");
+            }
+
+            if (succeeded && toolName === "editFile" && parsed?.diff) {
+              console.log(
+                renderDiff(parsed.diff.old, parsed.diff.new, 30) + "\n",
+              );
+            }
           } catch (err: any) {
             const errorMsg = err?.message || "Unknown error";
             result = JSON.stringify({
@@ -350,7 +354,7 @@ class AgentLoop {
             runCommand: 1000,
             listDirectory: 500,
             readFile: 8000,
-            editFile: 200,
+            editFile: 1500,
             createFile: 200,
             grep: 2000,
             webSearch: 3000,
@@ -429,7 +433,10 @@ class AgentLoop {
               }
               const names = toolCalls
                 .filter(Boolean)
-                .map((tc: any) => TOOL_LABELS[tc.function.name] ?? tc.function.name)
+                .map(
+                  (tc: any) =>
+                    TOOL_LABELS[tc.function.name] ?? tc.function.name,
+                )
                 .filter(Boolean);
               spinner.text = names.length
                 ? `Preparing ${names.join(", ")}...`

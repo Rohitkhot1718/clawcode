@@ -1,3 +1,4 @@
+import path from "node:path";
 import { toolSchemas } from "../tools/schema.js";
 import { tools } from "../tools/index.js";
 import ora from "ora";
@@ -8,6 +9,7 @@ import {
   shouldCompressContext,
   calculateTokenBudget,
 } from "../utils/tokenCounter.js";
+import { permissions } from "./permissions.js";
 
 const toolsMap: any = {
   runCommand: (args: any) => tools.runCommand(args),
@@ -24,36 +26,98 @@ const toolsMap: any = {
   getLineCount: (args: any) => tools.getLineCount(args),
 };
 
+// Friendly display names for the terminal (the model still sees the real
+// tool names). Rendered Claude Code-style: `Create(src/App.jsx)`.
+const TOOL_LABELS: Record<string, string> = {
+  runCommand: "Shell",
+  startBackground: "Background",
+  createFile: "Create",
+  readFile: "Read",
+  editFile: "Edit",
+  listDirectory: "List",
+  grep: "Search",
+  webSearch: "WebSearch",
+  fetchURL: "Fetch",
+  getLineCount: "Lines",
+  readProcessOutput: "Logs",
+  stopProcess: "Stop",
+};
+
+// Absolute paths inside the project render as short relative ones:
+// C:\...\clawcode\todo\client\src\App.jsx -> todo\client\src\App.jsx
+function displayPath(p: any): string {
+  const str = String(p ?? "");
+  try {
+    const rel = path.relative(process.cwd(), path.resolve(str));
+    if (rel === "") return ".";
+    if (!rel.startsWith("..") && !path.isAbsolute(rel)) return rel;
+  } catch {
+    // fall through to the raw string
+  }
+  return str;
+}
+
+// Detects a model mistake small models make: writing the tool arguments as
+// a JSON text reply (optionally fenced) instead of actually calling the
+// tool. Only matches when the ENTIRE message is one JSON object with
+// tool-ish keys, so ordinary answers that merely contain JSON don't trip it.
+export function looksLikeTextToolCall(content: string): boolean {
+  const trimmed = String(content ?? "").trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  const candidate = (fenced ? fenced[1] : trimmed).trim();
+  if (!candidate.startsWith("{") || !candidate.endsWith("}")) return false;
+  try {
+    const obj = JSON.parse(candidate);
+    if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
+      return false;
+    }
+    const toolish = [
+      "previousStepContent",
+      "filePath",
+      "dirPath",
+      "command",
+      "query",
+      "url",
+      "oldContent",
+      "newContent",
+    ];
+    return Object.keys(obj).some((k) => toolish.includes(k));
+  } catch {
+    return false;
+  }
+}
+
 // Short, human-readable summary of what a tool call is actually doing, e.g.
-// `runCommand npm install` or `grep "foo" in src`. Shown next to the spinner.
+// `Shell(npm install)` or `Search("foo" in src)`. Shown next to the spinner.
 function describeToolCall(toolName: string, args: any): string {
   const clip = (s: any, n = 60) => {
     const str = String(s ?? "");
     return str.length > n ? str.slice(0, n) + "…" : str;
   };
+  const name = TOOL_LABELS[toolName] ?? toolName;
 
   switch (toolName) {
     case "runCommand":
     case "startBackground":
-      return `${toolName} ${clip(args.command)}`;
+      return `${name}(${clip(args.command)})`;
     case "createFile":
     case "readFile":
     case "editFile":
     case "getLineCount":
-      return `${toolName} ${clip(args.filePath)}`;
+      return `${name}(${clip(displayPath(args.filePath))})`;
     case "listDirectory":
-      return `${toolName} ${clip(args.dirPath)}`;
+      return `${name}(${clip(displayPath(args.dirPath))})`;
     case "grep":
-      return `${toolName} "${clip(args.query, 40)}" in ${clip(args.filePath)}`;
+      return `${name}("${clip(args.query, 40)}" in ${clip(displayPath(args.filePath))})`;
     case "webSearch":
-      return `${toolName} "${clip(args.query)}"`;
+      return `${name}("${clip(args.query)}")`;
     case "fetchURL":
-      return `${toolName} ${clip(args.url)}`;
+      return `${name}(${clip(args.url)})`;
     case "readProcessOutput":
     case "stopProcess":
-      return `${toolName} ${clip(args.id)}`;
+      return `${name}(${clip(args.id)})`;
     default:
-      return toolName;
+      return name;
   }
 }
 
@@ -105,6 +169,7 @@ class AgentLoop {
     }
 
     this.messages.push({ role: "user", content: userInput });
+    permissions.setUserRequest(userInput);
 
     while (true) {
       await this.trimContext();
@@ -115,13 +180,28 @@ class AgentLoop {
         const response = await this.provider.chat(this.messages, toolSchemas);
 
         if (!response.ok) {
-          spinner.fail("LLM API error");
-          throw new Error(response.error || "Unknown LLM error");
+          spinner.stopAndPersist({
+            symbol: chalk.red("●"),
+            text: "LLM API error",
+          });
+          throw new Error(
+            response.message || response.error || "Unknown LLM error",
+          );
         }
 
-        spinner.stop();
+        const message = await this.processStream(response.message, spinner);
+        if (spinner.isSpinning) spinner.stop();
 
-        const message = await this.processStream(response.message);
+        const brokenToolCalls = new Set<string>();
+        for (const tc of message.tool_calls ?? []) {
+          try {
+            JSON.parse(tc.function.arguments || "{}");
+          } catch {
+            brokenToolCalls.add(tc.id);
+            tc.function.arguments = "{}";
+          }
+        }
+
         this.messages.push(this.sanitizeMessage(message));
 
         if (!message.tool_calls || message.tool_calls.length === 0) {
@@ -134,6 +214,20 @@ class AgentLoop {
             continue;
           }
 
+          if (looksLikeTextToolCall(message.content)) {
+            console.log(
+              chalk.yellow(
+                "\n(model wrote a tool call as text — asking it to retry properly)\n",
+              ),
+            );
+            this.messages.push({
+              role: "user",
+              content:
+                "You wrote tool arguments as a JSON text reply — that does not execute anything. Invoke the tool through the tool-calling interface instead, and do not print JSON in your message.",
+            });
+            continue;
+          }
+
           const responseContent = message.content || "";
 
           return responseContent;
@@ -142,8 +236,20 @@ class AgentLoop {
         for (const toolCall of message.tool_calls as any[]) {
           const toolName = toolCall?.function?.name;
           let args = toolCall.function.arguments;
-          
+
           if (!toolName || !args) {
+            continue;
+          }
+
+          if (brokenToolCalls.has(toolCall.id)) {
+            this.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                error: `The arguments for ${toolName} were not valid JSON (truncated or malformed). Retry this tool call with complete, valid JSON arguments.`,
+              }),
+            });
             continue;
           }
 
@@ -166,7 +272,7 @@ class AgentLoop {
           const toolFunc = toolsMap[toolName];
 
           if (args.previousStepContent)
-            console.log("\n", chalk.white(args.previousStepContent || ""));
+            console.log(chalk.white(args.previousStepContent || ""));
 
           const label = describeToolCall(toolName, args);
 
@@ -176,6 +282,20 @@ class AgentLoop {
               name: toolName,
               tool_call_id: toolCall.id,
               content: `Error: Tool "${toolName}" not found`,
+            });
+            continue;
+          }
+
+          const decision = await permissions.check(toolName, args, label);
+          if (decision.behavior === "deny") {
+            console.log(`${chalk.red("●")} ${chalk.gray(label)} — denied by user\n`);
+            this.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                error: decision.message,
+              }),
             });
             continue;
           }
@@ -200,14 +320,30 @@ class AgentLoop {
               });
             }
 
-            spinner.succeed(`🛠 ${chalk.gray(label)}\n`);
+            if (toolName === "createFile" && args.filePath) {
+              try {
+                if (JSON.parse(result)?.success) {
+                  permissions.markCreated(args.filePath);
+                }
+              } catch {
+                // unparseable result — don't mark
+              }
+            }
+
+            spinner.stopAndPersist({
+              symbol: chalk.green("●"),
+              text: `${chalk.gray(label)}\n`,
+            });
           } catch (err: any) {
             const errorMsg = err?.message || "Unknown error";
             result = JSON.stringify({
               success: false,
               error: `Tool execution failed: ${errorMsg}`,
             });
-            spinner.fail(`${chalk.gray(label)} failed: ${errorMsg}`);
+            spinner.stopAndPersist({
+              symbol: chalk.red("●"),
+              text: `${chalk.gray(label)} failed: ${errorMsg}`,
+            });
           }
 
           const MAX_CHARS: Record<string, number> = {
@@ -237,18 +373,16 @@ class AgentLoop {
         }
       } catch (err: any) {
         spinner.stop();
-        console.error("Agent loop error:", err);
-        throw new Error(
-          `Agent loop failed: ${err?.message || "Unknown error"}`,
-        );
+        throw new Error(err?.message || "Unknown error", { cause: err });
       }
     }
   }
 
-  private async processStream(stream: any): Promise<any> {
+  private async processStream(stream: any, spinner?: any): Promise<any> {
     let fullContent = "";
     let toolCalls: any = [];
     let finishReason = "";
+    let contentNeedsNewline = false;
 
     try {
       for await (const chunk of stream) {
@@ -256,25 +390,50 @@ class AgentLoop {
           const delta = chunk.choices[0]?.delta;
 
           if (delta?.content) {
+            if (spinner?.isSpinning) spinner.stop();
             process.stdout.write(delta.content);
             fullContent += delta.content;
+            contentNeedsNewline = !delta.content.endsWith("\n");
           }
 
           if (delta?.tool_calls) {
             for (let i = 0; i < delta.tool_calls.length; i++) {
               const toolCall = delta.tool_calls[i];
-              if (!toolCalls[i]) {
-                toolCalls[i] = {
-                  id: toolCall.id || "",
-                  function: {
-                    name: toolCall.function?.name || "",
-                    arguments: "",
-                  },
+              const slot = toolCall.index ?? i;
+              if (!toolCalls[slot]) {
+                toolCalls[slot] = {
+                  id: "",
+                  function: { name: "", arguments: "" },
                 };
               }
-              if (toolCall.function?.arguments) {
-                toolCalls[i].function.arguments += toolCall.function.arguments;
+              if (toolCall.id) {
+                toolCalls[slot].id = toolCalls[slot].id || toolCall.id;
               }
+              if (toolCall.function?.name) {
+                toolCalls[slot].function.name =
+                  toolCalls[slot].function.name || toolCall.function.name;
+              }
+              if (toolCall.function?.arguments) {
+                toolCalls[slot].function.arguments +=
+                  toolCall.function.arguments;
+              }
+            }
+
+            if (spinner) {
+              if (!spinner.isSpinning) {
+                if (contentNeedsNewline) {
+                  process.stdout.write("\n");
+                  contentNeedsNewline = false;
+                }
+                spinner.start();
+              }
+              const names = toolCalls
+                .filter(Boolean)
+                .map((tc: any) => TOOL_LABELS[tc.function.name] ?? tc.function.name)
+                .filter(Boolean);
+              spinner.text = names.length
+                ? `Preparing ${names.join(", ")}...`
+                : "Preparing tool call...";
             }
           }
 
@@ -290,6 +449,8 @@ class AgentLoop {
       if (!streamErr?.message?.includes("JSON")) {
         throw streamErr;
       }
+    } finally {
+      if (spinner?.isSpinning) spinner.stop();
     }
 
     console.log();
@@ -378,9 +539,6 @@ class AgentLoop {
       return;
     }
 
-    // Find a safe cut point: `recent` must not start with an orphaned `tool`
-    // message whose parent assistant tool_calls got summarized away (the API
-    // rejects a tool message that doesn't follow its matching tool_calls).
     let splitIndex = nonSystem.length - keep;
     while (
       splitIndex < nonSystem.length &&

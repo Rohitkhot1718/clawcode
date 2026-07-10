@@ -18,80 +18,77 @@ async function getActiveModel(): Promise<any | null> {
   }
 }
 
-function createReadlineInterface() {
-  return readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: chalk.cyan("> "),
+function askInput(): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    let settled = false;
+    const done = (value: string) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
+    process.stdin.resume();
+
+    rl.question(chalk.cyan("> "), (answer) => {
+      done(answer);
+      rl.close();
+    });
+
+    rl.on("close", () => done("/exit"));
   });
 }
 
-async function startREPL(rl: any) {
-  let isProcessing = false;
+async function startREPL() {
+  while (true) {
+    const input = (await askInput()).trim();
+    if (!input) continue;
 
-  rl.on("line", async (input: any) => {
-    const trimmedInput = input.trim();
-    if (!trimmedInput || isProcessing) return;
-
-    isProcessing = true;
     try {
-      if (trimmedInput === "/model") {
-        rl.close();
+      if (input === "/exit") {
+        console.log(chalk.gray("  Goodbye!"));
+        return;
+      }
+
+      if (input === "/model") {
         await switchModel();
         console.log(modelLine(await getActiveModel()) + "\n");
-        const newRl = createReadlineInterface();
-        startREPL(newRl);
-        newRl.prompt();
-        return;
+        continue;
       }
 
-      if (trimmedInput === "/config") {
-        rl.close();
+      if (input === "/config") {
         await configWizard();
         console.log(modelLine(await getActiveModel()) + "\n");
-        const newRl = createReadlineInterface();
-        startREPL(newRl);
-        newRl.prompt();
-        return;
+        continue;
       }
 
-      if (trimmedInput === "/exit") {
-        console.log(chalk.gray("Goodbye!"));
-        rl.close();
-        return;
-      }
-
-      if (trimmedInput === "/help") {
+      if (input === "/help") {
         console.log(modelLine(await getActiveModel()));
         console.log(
           chalk.gray(
             "\n  /config → add new model   /model → switch model\n  /exit   → quit            /help  → show commands\n",
           ),
         );
-        isProcessing = false;
-        rl.prompt();
-        return;
+        continue;
       }
 
       const selectedModel: any = await getModel();
       await agent.run(
-        trimmedInput,
+        input,
         selectedModel.provider,
         selectedModel.model,
         selectedModel.contextLimit,
       );
       console.log();
-    } catch (err) {
-      console.error(chalk.red("Error:"), err);
-    } finally {
-      isProcessing = false;
-      if (trimmedInput !== "/exit" && trimmedInput !== "/model") {
-        rl.prompt();
-      }
+    } catch (err: any) {
+      console.error(chalk.red("Error:"), err?.message || err);
     }
-  });
-
-  rl.prompt();
+  }
 }
 
 async function main() {
@@ -106,8 +103,7 @@ async function main() {
 
   printBanner(await getActiveModel());
 
-  const rl = createReadlineInterface();
-  await startREPL(rl);
+  await startREPL();
 }
 
 main().catch((err) => {

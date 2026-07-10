@@ -95,10 +95,19 @@ export class OpenAIProvider {
       };
     }
 
+    if (err.status === 400) {
+      return {
+        ok: false,
+        error: "BAD_REQUEST",
+        message: `Bad request (400): ${err?.error?.message || err.message || "no details from API"}`,
+      };
+    }
+
+    const detail = err?.error?.message || err.message || "Something went wrong";
     return {
       ok: false,
       error: "UNKNOWN_ERROR",
-      message: err?.error?.message || err.message || "Something went wrong",
+      message: err.status ? `HTTP ${err.status}: ${detail}` : detail,
     };
   }
 }

@@ -71,26 +71,57 @@ class Tools {
       });
     }
 
+    const TIMEOUT_MS = 120_000;
+
     return new Promise((resolve) => {
-      const child = spawn(command, { shell: true });
+      // stdin "ignore": a command that waits for interactive input (e.g. a
+      // `del` folder confirmation) gets immediate EOF instead of hanging the
+      // agent forever on a pipe nothing writes to.
+      const child = spawn(command, {
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
       let output = "",
         errorOutput = "";
+      let settled = false;
+
+      const finish = (payload: object) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(JSON.stringify(payload));
+      };
+
+      const timer = setTimeout(() => {
+        if (process.platform === "win32" && child.pid) {
+          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } else {
+          child.kill("SIGKILL");
+        }
+        finish({
+          success: false,
+          error: `Command timed out after ${TIMEOUT_MS / 1000}s and was killed. If it is a server or watcher use startBackground; if it prompts for input, pass non-interactive flags. Output so far: ${(output + errorOutput).slice(-500)}`,
+        });
+      }, TIMEOUT_MS);
+
       child.stdout.on("data", (d) => (output += d.toString()));
       child.stderr.on("data", (d) => (errorOutput += d.toString()));
       child.on("close", (code) => {
-        resolve(
-          JSON.stringify(
-            code === 0
-              ? {
-                  success: true,
-                  data: output || "Command executed successfully",
-                }
-              : { success: false, error: errorOutput },
-          ),
+        finish(
+          code === 0
+            ? {
+                success: true,
+                data: output || "Command executed successfully",
+              }
+            : { success: false, error: errorOutput || output },
         );
       });
       child.on("error", (err) =>
-        resolve(JSON.stringify({ success: false, error: err.message })),
+        finish({ success: false, error: err.message }),
       );
     });
   }
@@ -460,17 +491,19 @@ class Tools {
     url,
     method = "GET",
     body,
+    headers,
   }: {
     url: string;
     method?: string;
     body?: string;
+    headers?: Record<string, string>;
   }): Promise<any> {
     try {
       const upperMethod = method.toUpperCase();
       const hasBody = body && !["GET", "HEAD"].includes(upperMethod);
       const res = await fetch(url, {
         method: upperMethod,
-        headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+        headers: { ...headers, ...(hasBody ? { "Content-Type": "application/json" } : {}) },
         body: hasBody ? body : undefined,
       });
       const contentType = res.headers.get("content-type") || "";

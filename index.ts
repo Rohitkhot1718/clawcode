@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import readline from "readline";
 import { agent } from "./src/agent/loop.js";
 import dotenv from "dotenv";
 import chalk from "chalk";
@@ -7,6 +6,7 @@ import { checkConfig, switchModel, configWizard } from "./src/cli/setup.js";
 import { getModel } from "./src/config/index.js";
 import { program } from "./src/cli/index.js";
 import { printBanner, modelLine } from "./src/cli/banner.js";
+import { askInput } from "./src/cli/input.js";
 
 dotenv.config();
 
@@ -18,32 +18,6 @@ async function getActiveModel(): Promise<any | null> {
   }
 }
 
-function askInput(): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    let settled = false;
-    const done = (value: string) => {
-      if (!settled) {
-        settled = true;
-        resolve(value);
-      }
-    };
-
-    process.stdin.resume();
-
-    rl.question(chalk.cyan("> "), (answer) => {
-      done(answer);
-      rl.close();
-    });
-
-    rl.on("close", () => done("/exit"));
-  });
-}
-
 async function startREPL() {
   while (true) {
     const input = (await askInput()).trim();
@@ -51,8 +25,7 @@ async function startREPL() {
 
     try {
       if (input === "/exit") {
-        console.log(chalk.gray("  Goodbye!"));
-        return;
+        process.exit(1);
       }
 
       if (input === "/model") {

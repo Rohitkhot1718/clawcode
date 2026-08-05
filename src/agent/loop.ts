@@ -11,6 +11,12 @@ import {
 } from "../utils/tokenCounter.js";
 import { permissions } from "./permissions.js";
 import { renderDiff } from "../utils/renderdiff.js";
+import {
+  saveSession,
+  saveSessionMeta,
+  loadSessionMeta,
+  deriveSessionName,
+} from "../session/session.js";
 
 const toolsMap: any = {
   runCommand: (args: any) => tools.runCommand(args),
@@ -25,10 +31,10 @@ const toolsMap: any = {
   webSearch: (args: any) => tools.webSearch(args),
   fetchURL: (args: any) => tools.fetchURL(args),
   getLineCount: (args: any) => tools.getLineCount(args),
+  saveMemoryNote: (args: any) => tools.saveMemoryNote(args),
 };
 
-
-const TOOL_LABELS: Record<string, string> = {
+export const TOOL_LABELS: Record<string, string> = {
   runCommand: "Shell",
   startBackground: "Background",
   createFile: "Create",
@@ -41,6 +47,7 @@ const TOOL_LABELS: Record<string, string> = {
   getLineCount: "Lines",
   readProcessOutput: "Logs",
   stopProcess: "Stop",
+  saveMemoryNote: "Memory",
 };
 
 function displayPath(p: any): string {
@@ -81,7 +88,7 @@ export function looksLikeTextToolCall(content: string): boolean {
   }
 }
 
-function describeToolCall(toolName: string, args: any): string {
+export function describeToolCall(toolName: string, args: any): string {
   const clip = (s: any, n = 60) => {
     const str = String(s ?? "");
     return str.length > n ? str.slice(0, n) + "…" : str;
@@ -108,6 +115,8 @@ function describeToolCall(toolName: string, args: any): string {
     case "readProcessOutput":
     case "stopProcess":
       return `${name}(${clip(args.id)})`;
+    case "saveMemoryNote":
+      return `${name}("${clip(args.note, 60)}")`;
     default:
       return name;
   }
@@ -124,6 +133,69 @@ class AgentLoop {
   private currentModel = "";
   private MAX_TOKENS = 128000;
   private readonly TOKEN_COMPRESSION_THRESHOLD = 0.8;
+  private sessionId: string = "";
+  private sessionCreatedAt: string = "";
+  private titleGenerationPending = false;
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  async recordModelChoice(provider: string, model: string) {
+    if (!this.sessionId) return;
+    await saveSessionMeta(this.sessionId, {
+      provider,
+      model,
+      createdAt: this.sessionCreatedAt || new Date().toISOString(),
+    });
+  }
+
+  private async generateSessionTitle(
+    userInput: string,
+    sessionId: string,
+    provider: string,
+    model: string,
+  ) {
+    try {
+      const titleProvider = this.provider;
+      const response = await titleProvider.chat([
+        {
+          role: "system",
+          content:
+            "Generate a short 3-6 word title summarizing the user's request. Reply with only the title — no quotes, no trailing punctuation, no explanation.",
+        },
+        { role: "user", content: userInput },
+      ]);
+
+      if (!response.ok) return;
+
+      const title = (await this.consumeStreamSilently(response.message)).trim();
+      if (!title) return;
+
+      await saveSessionMeta(sessionId, {
+        provider,
+        model,
+        createdAt: this.sessionCreatedAt,
+        name: title,
+      });
+    } catch {
+      // Non-critical: keep the derived fallback name if this fails.
+    }
+  }
+
+  async resumeFrom(sessionId: string, messages: any[]) {
+    this.systemPrompt = await buildSystemPrompt();
+    this.summaryPrompt = await buildSummaryPrompt();
+    this.sessionId = sessionId;
+    this.messages = [
+      { role: "system", content: this.systemPrompt },
+      ...messages,
+    ];
+    this.initialized = true;
+
+    const meta = await loadSessionMeta(sessionId);
+    this.sessionCreatedAt = meta?.createdAt ?? new Date().toISOString();
+  }
 
   async run(
     userInput: string,
@@ -140,6 +212,16 @@ class AgentLoop {
       this.summaryPrompt = await buildSummaryPrompt();
       this.initialized = true;
       this.messages = [{ role: "system", content: this.systemPrompt }];
+
+      this.sessionId = crypto.randomUUID();
+      this.sessionCreatedAt = new Date().toISOString();
+      await saveSessionMeta(this.sessionId, {
+        provider,
+        model,
+        createdAt: this.sessionCreatedAt,
+        name: deriveSessionName(userInput),
+      });
+      this.titleGenerationPending = true;
     }
 
     if (this.sessionMemories.length > 0) {
@@ -155,13 +237,29 @@ class AgentLoop {
     }
 
     if (provider !== this.currentProvider || model !== this.currentModel) {
+      const isSwitch = this.currentProvider !== "";
+
       this.provider = await createProvider(provider, model);
       this.currentProvider = provider;
       this.currentModel = model;
+
+      if (isSwitch) {
+        await saveSessionMeta(this.sessionId, {
+          provider,
+          model,
+          createdAt: this.sessionCreatedAt,
+        });
+      }
+    }
+
+    if (this.titleGenerationPending) {
+      this.titleGenerationPending = false;
+      this.generateSessionTitle(userInput, this.sessionId, provider, model);
     }
 
     this.messages.push({ role: "user", content: userInput });
     permissions.setUserRequest(userInput);
+    await saveSession(this.sessionId, { role: "user", content: userInput });
 
     while (true) {
       await this.trimContext();
@@ -195,6 +293,7 @@ class AgentLoop {
         }
 
         this.messages.push(this.sanitizeMessage(message));
+        await saveSession(this.sessionId, this.sanitizeMessage(message));
 
         if (!message.tool_calls || message.tool_calls.length === 0) {
           if (!message.content?.trim()) {
@@ -291,6 +390,14 @@ class AgentLoop {
                 error: decision.message,
               }),
             });
+            await saveSession(this.sessionId, {
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                error: decision.message,
+              }),
+            });
             continue;
           }
 
@@ -314,7 +421,6 @@ class AgentLoop {
                 error: "Tool returned invalid JSON format",
               });
             }
-
 
             const succeeded = parsed !== null && parsed?.success !== false;
 
@@ -374,12 +480,29 @@ class AgentLoop {
             tool_call_id: toolCall.id,
             content: finalResult,
           });
+          await saveSession(this.sessionId, {
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: finalResult,
+          });
         }
       } catch (err: any) {
         spinner.stop();
         throw new Error(err?.message || "Unknown error", { cause: err });
       }
     }
+  }
+
+  private async consumeStreamSilently(stream: any): Promise<string> {
+    let fullContent = "";
+    try {
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) fullContent += delta.content;
+      }
+    } catch {
+    }
+    return fullContent;
   }
 
   private async processStream(stream: any, spinner?: any): Promise<any> {

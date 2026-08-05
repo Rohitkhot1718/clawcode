@@ -2,6 +2,7 @@ import { loadConfig, saveConfig } from "../config/index.js";
 import ora from "ora";
 import { testLLmConnection } from "./util.js";
 import { clearLine, prompt } from "../utils/enquirerPrompt.js";
+import chalk from "chalk";
 
 export async function checkConfig() {
   const config = await loadConfig();
@@ -189,6 +190,7 @@ export async function switchModel() {
   });
 
   if (!res) return null;
+  clearLine();
 
   await saveConfig({ default: res.selectedId });
 
@@ -196,5 +198,5 @@ export async function switchModel() {
     (m: any) => m.id === res.selectedId,
   );
 
-  console.log(`\n✔ Switched to ${selectedModel.name}\n`);
+  console.log(chalk.yellow(`↻ Switched to ${selectedModel.name} (${selectedModel.provider})\n`));
 }

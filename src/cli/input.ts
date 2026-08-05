@@ -2,6 +2,7 @@ import readline from "readline";
 import chalk from "chalk";
 import fs from "fs";
 import path from "path";
+import { IGNORE_DIRS } from "../tools/index.js";
 
 interface Suggestion {
   name: string;
@@ -31,6 +32,7 @@ function listMatches(partial: string, cwd: string): Suggestion[] {
     .filter(
       (e) =>
         !e.name.startsWith(".") &&
+        !(e.isDirectory() && IGNORE_DIRS.has(e.name)) &&
         e.name.toLowerCase().startsWith(prefix.toLowerCase()),
     )
     .sort(

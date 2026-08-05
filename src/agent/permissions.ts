@@ -21,7 +21,12 @@ const READ_ONLY_TOOLS = new Set([
   "webSearch",
 ]);
 
-const AUTO_ALLOW_TOOLS = new Set(["createFile", "editFile", "stopProcess"]);
+const AUTO_ALLOW_TOOLS = new Set([
+  "createFile",
+  "editFile",
+  "stopProcess",
+  "saveMemoryNote",
+]);
 
 const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /(^|[\s&|;])(del|erase|rd|rmdir|rm)(\.exe)?(\s|$)/i,
@@ -76,11 +81,6 @@ function escapeRegex(s: string): string {
 
 const DELETE_VERB = /^(del|erase|rd|rmdir|rm|remove-item)(\.exe)?$/i;
 
-// For a plain delete command — `del "note.txt" /q`, `rm -rf build`,
-// `cd src && del old.js` — returns the target tokens. Returns null when the
-// command is destructive in a way we can't analyze (format, git reset, ...)
-// or has no explicit targets (wildcards stay as tokens and simply won't
-// match approval checks).
 function extractDeleteTargets(command: string): string[] | null {
   const targets: string[] = [];
   for (const seg of chainSegments(command)) {

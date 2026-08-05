@@ -11,9 +11,15 @@ program
     await cliCommands.useModel(model);
   });
 
-program.argument("<input>", "Input prompt").action(async (input: string) => {
-  await cliCommands.runInput(input);
-});
+program
+  .argument("[input]", "Input prompt")
+  .action(async (input: string | undefined) => {
+    if (!input) {
+      program.help();
+      return;
+    }
+    await cliCommands.runInput(input);
+  });
 
 program
   .command("models")

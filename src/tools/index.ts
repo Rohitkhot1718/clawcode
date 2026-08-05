@@ -3,8 +3,10 @@ import fs from "fs/promises";
 import path from "path";
 import readline from "readline";
 import fsSync from "fs";
+import { loadConfig } from "../config/index.js";
+import { saveMemoryNote } from "../memory/memory.js";
 
-const IGNORE_DIRS = new Set([
+export const IGNORE_DIRS = new Set([
   ".git",
   "node_modules",
   "__pycache__",
@@ -627,7 +629,7 @@ class Tools {
   }
 
   async webSearch({ query }: { query: string }): Promise<string> {
-    const apiKey = process.env.TAVILY_API_KEY;
+    const apiKey = await loadConfig().then((config) => config?.keys?.tavily);
     if (!apiKey) {
       return JSON.stringify({
         success: false,
@@ -727,6 +729,33 @@ class Tools {
           lineCount,
           fileSizeBytes: stats.size,
         },
+      });
+    } catch (error: any) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  }
+
+  async saveMemoryNote({
+    note,
+    replaces,
+  }: {
+    note: string;
+    replaces?: string;
+  }): Promise<string> {
+    if (!note || typeof note !== "string") {
+      return JSON.stringify({
+        success: false,
+        error: "Note must be a non-empty string",
+      });
+    }
+
+    try {
+      await saveMemoryNote(note, replaces);
+      return JSON.stringify({
+        success: true,
+        data: replaces
+          ? "Memory note updated successfully."
+          : "Memory note saved successfully.",
       });
     } catch (error: any) {
       return JSON.stringify({ success: false, error: error.message });

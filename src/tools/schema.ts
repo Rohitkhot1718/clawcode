@@ -293,4 +293,29 @@ export const toolSchemas: any[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "saveMemoryNote",
+      description:
+        "Save a durable note to memory for future sessions. If this corrects or updates an existing note (shown in the Memory section of your instructions), pass its exact current text as `replaces` so it gets swapped instead of duplicated.",
+      parameters: {
+        type: "object",
+        properties: {
+          note: { type: "string" },
+          replaces: {
+            type: "string",
+            description:
+              "Exact text of an existing note this one replaces, copied verbatim from the Memory section. Omit if this is a brand-new note.",
+          },
+          previousStepContent: {
+            type: "string",
+            description:
+              "A natural, conversational summary of the previous task or the current step.",
+          },
+        },
+        required: ["note", "previousStepContent"],
+      },
+    },
+  }
 ];

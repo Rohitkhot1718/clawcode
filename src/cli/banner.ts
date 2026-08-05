@@ -60,8 +60,8 @@ export function modelLine(model?: BannerModel | null): string {
     return chalk.yellow("⚠ No model configured — run /config to add one");
   }
 
-  const parts = [chalk.gray("model:      "), chalk.greenBright(model.name)];
-  if (model.provider) parts.push(chalk.gray(`  ·  ${model.provider}`));
+  const parts = [chalk.gray("model: "), chalk.greenBright(model.name)];
+  if (model.provider) parts.push(chalk.gray(` (${model.provider})`));
   parts.push(chalk.gray("   /model to change"));
   return parts.join("");
 }

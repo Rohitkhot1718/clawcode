@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import readline from "readline";
 import { agent } from "./src/agent/loop.js";
 import dotenv from "dotenv";
 import chalk from "chalk";
@@ -59,8 +60,47 @@ async function getSessionBannerModel(sessionId: string): Promise<any | null> {
 }
 
 
+let isRunning = false;
+let globalKeyHandlingSetup = false;
+
+// Raw mode + keypress decoding are enabled exactly once, for the whole
+// process lifetime, right before the REPL starts — never toggled off again.
+// A single persistent listener handles Ctrl+C (always) and Escape (only
+// while a turn is actually running). This replaces the earlier per-turn
+// attach/detach approach, which caused intermittent input breakage.
+function setupGlobalKeyHandling() {
+  if (globalKeyHandlingSetup) return;
+  globalKeyHandlingSetup = true;
+
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return;
+
+  readline.emitKeypressEvents(stdin);
+  stdin.setRawMode(true);
+  stdin.resume();
+
+  stdin.on("keypress", (_str, key) => {
+    if (key?.ctrl && key?.name === "c") {
+      const sessionId = agent.getSessionId();
+      if (sessionId) {
+        console.log(chalk.gray("\nResume this session with:"));
+        console.log(chalk.gray(`clawcode --resume ${sessionId}`));
+      }
+      process.exit(0);
+    }
+    if (isRunning && key?.name === "escape") {
+      agent.interrupt();
+    }
+  });
+}
+
 async function runWithInterrupt<T>(task: () => Promise<T>): Promise<T> {
-  return task();
+  isRunning = true;
+  try {
+    return await task();
+  } finally {
+    isRunning = false;
+  }
 }
 
 async function startREPL() {
@@ -158,6 +198,7 @@ async function main() {
 
     await printSession(sessionId);
     await agent.resumeFrom(sessionId, messages);
+    setupGlobalKeyHandling();
     await startREPL();
     return;
   }
@@ -171,6 +212,7 @@ async function main() {
 
   printBanner(await getActiveModel());
 
+  setupGlobalKeyHandling();
   await startREPL();
 }
 

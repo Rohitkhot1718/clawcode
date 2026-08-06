@@ -48,15 +48,14 @@ function listMatches(partial: string, cwd: string): Suggestion[] {
     }));
 }
 
+// Raw mode and keypress decoding are set up once, globally, at process
+// startup (see index.ts) and left on for the whole process lifetime — this
+// function only ever adds/removes its own listener on top of that, it never
+// touches raw mode itself. (Toggling raw mode on/off per call used to live
+// here and caused intermittent input breakage.)
 export function askInput(promptText = "> "): Promise<string> {
   return new Promise((resolve) => {
     const stdin = process.stdin;
-    const isTTY = Boolean(stdin.isTTY);
-    const wasRaw = stdin.isRaw;
-
-    readline.emitKeypressEvents(stdin);
-    if (isTTY) stdin.setRawMode(true);
-    stdin.resume();
 
     let buffer = "";
     let cursor = 0;
@@ -154,7 +153,6 @@ export function askInput(promptText = "> "): Promise<string> {
     function cleanup() {
       finished = true;
       stdin.removeListener("keypress", onKeypress);
-      if (isTTY) stdin.setRawMode(wasRaw ?? false);
     }
 
     function finish(value: string) {
@@ -165,13 +163,9 @@ export function askInput(promptText = "> "): Promise<string> {
       resolve(value);
     }
 
+    // Ctrl+C is handled by the single global listener in index.ts, not here.
     function onKeypress(str: string, key: readline.Key) {
       if (finished) return;
-
-      if (key.ctrl && key.name === "c") {
-        finish("/exit");
-        return;
-      }
 
       if (key.name === "return" || key.name === "enter") {
         if (suggestions.length) {

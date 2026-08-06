@@ -25,26 +25,31 @@ export class OpenAIProvider {
     return false;
   }
 
-  async chat(messages: any[], tools?: any[]): Promise<any> {
+  async chat(messages: any[], tools?: any[], signal?: AbortSignal): Promise<any> {
     const MAX_RETRIES = 3;
 
     for (let attempt = 0; ; attempt++) {
       try {
-        const response: any = await this.client.chat.completions.create({
-          model: this.model,
-          messages,
-          stream: true,
-          ...(tools ? { tools } : {}),
-          tool_choice: tools ? "auto" : "none",
-        });
+        const response: any = await this.client.chat.completions.create(
+          {
+            model: this.model,
+            messages,
+            stream: true,
+            ...(tools ? { tools } : {}),
+            tool_choice: tools ? "auto" : "none",
+          },
+          signal ? { signal } : undefined,
+        );
 
         return {
           ok: true,
           message: response,
         };
       } catch (err: any) {
+        if (err?.name === "AbortError" || signal?.aborted) {
+          return { ok: false, error: "ABORTED", message: "Interrupted by user" };
+        }
         if (this.isRetryable(err) && attempt < MAX_RETRIES) {
-          // Exponential backoff with jitter: ~0.5s, 1s, 2s.
           const delay = 500 * 2 ** attempt + Math.floor(Math.random() * 250);
           await new Promise((r) => setTimeout(r, delay));
           continue;

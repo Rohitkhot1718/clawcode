@@ -12,7 +12,7 @@ const SETTINGS_DIR = ".clawcode";
 const SETTINGS_FILE = "settings.json";
 
 // Tools that only observe state — never prompt for these.
-const READ_ONLY_TOOLS = new Set([
+export const READ_ONLY_TOOLS = new Set([
   "readFile",
   "listDirectory",
   "grep",

@@ -9,7 +9,7 @@ import {
   shouldCompressContext,
   calculateTokenBudget,
 } from "../utils/tokenCounter.js";
-import { permissions } from "./permissions.js";
+import { permissions, READ_ONLY_TOOLS } from "./permissions.js";
 import { renderDiff } from "../utils/renderdiff.js";
 import {
   saveSession,
@@ -125,7 +125,6 @@ export function describeToolCall(toolName: string, args: any): string {
 class AgentLoop {
   private provider: any;
   private messages: any[] = [];
-  private sessionMemories: string[] = [];
   private systemPrompt!: string;
   private summaryPrompt!: string;
   private initialized = false;
@@ -136,6 +135,31 @@ class AgentLoop {
   private sessionId: string = "";
   private sessionCreatedAt: string = "";
   private titleGenerationPending = false;
+  private abortController: AbortController | null = null;
+
+  interrupt(): void {
+    this.abortController?.abort();
+  }
+
+  private async handleInterrupt(
+    spinner: any = null,
+    partialContent?: string | null,
+  ): Promise<string> {
+    if (spinner?.isSpinning) {
+      spinner.stopAndPersist({ symbol: chalk.yellow("■"), text: "Interrupted" });
+    } else {
+      console.log(`\n${chalk.yellow("■")} Interrupted`);
+    }
+
+    const interruptMsg = {
+      role: "user" as const,
+      content: "[Interrupted by user before this response finished]",
+    };
+    this.messages.push(interruptMsg);
+    await saveSession(this.sessionId, interruptMsg);
+
+    return partialContent || "";
+  }
 
   getSessionId(): string {
     return this.sessionId;
@@ -184,7 +208,13 @@ class AgentLoop {
   }
 
   async resumeFrom(sessionId: string, messages: any[]) {
-    this.systemPrompt = await buildSystemPrompt();
+    const meta = await loadSessionMeta(sessionId);
+    this.sessionCreatedAt = meta?.createdAt ?? new Date().toISOString();
+
+    this.systemPrompt = await buildSystemPrompt(
+      meta?.provider ?? "unknown",
+      meta?.model ?? "unknown",
+    );
     this.summaryPrompt = await buildSummaryPrompt();
     this.sessionId = sessionId;
     this.messages = [
@@ -192,9 +222,6 @@ class AgentLoop {
       ...messages,
     ];
     this.initialized = true;
-
-    const meta = await loadSessionMeta(sessionId);
-    this.sessionCreatedAt = meta?.createdAt ?? new Date().toISOString();
   }
 
   async run(
@@ -208,7 +235,7 @@ class AgentLoop {
     }
 
     if (!this.initialized) {
-      this.systemPrompt = await buildSystemPrompt();
+      this.systemPrompt = await buildSystemPrompt(provider, model);
       this.summaryPrompt = await buildSummaryPrompt();
       this.initialized = true;
       this.messages = [{ role: "system", content: this.systemPrompt }];
@@ -224,18 +251,6 @@ class AgentLoop {
       this.titleGenerationPending = true;
     }
 
-    if (this.sessionMemories.length > 0) {
-      const memoryMsg = `Previous tasks this session:\n${this.sessionMemories.join("\n")}`;
-      const existing = this.messages.findIndex((m) =>
-        m.content?.startsWith("Previous tasks"),
-      );
-      if (existing >= 0) {
-        this.messages[existing].content = memoryMsg;
-      } else {
-        this.messages.splice(1, 0, { role: "system", content: memoryMsg });
-      }
-    }
-
     if (provider !== this.currentProvider || model !== this.currentModel) {
       const isSwitch = this.currentProvider !== "";
 
@@ -249,6 +264,10 @@ class AgentLoop {
           model,
           createdAt: this.sessionCreatedAt,
         });
+        this.systemPrompt = await buildSystemPrompt(provider, model);
+        if (this.messages[0]?.role === "system") {
+          this.messages[0].content = this.systemPrompt;
+        }
       }
     }
 
@@ -261,13 +280,24 @@ class AgentLoop {
     permissions.setUserRequest(userInput);
     await saveSession(this.sessionId, { role: "user", content: userInput });
 
+    const readOnlyCallCache = new Map<string, string>();
+    this.abortController = new AbortController();
+
     while (true) {
       await this.trimContext();
 
       const spinner = ora("Thinking...").start();
 
       try {
-        const response = await this.provider.chat(this.messages, toolSchemas);
+        const response = await this.provider.chat(
+          this.messages,
+          toolSchemas,
+          this.abortController.signal,
+        );
+
+        if (response.error === "ABORTED") {
+          return await this.handleInterrupt(spinner);
+        }
 
         if (!response.ok) {
           spinner.stopAndPersist({
@@ -294,6 +324,10 @@ class AgentLoop {
 
         this.messages.push(this.sanitizeMessage(message));
         await saveSession(this.sessionId, this.sanitizeMessage(message));
+
+        if (this.abortController?.signal.aborted) {
+          return await this.handleInterrupt(null, message.content);
+        }
 
         if (!message.tool_calls || message.tool_calls.length === 0) {
           if (!message.content?.trim()) {
@@ -325,6 +359,10 @@ class AgentLoop {
         }
 
         for (const toolCall of message.tool_calls as any[]) {
+          if (this.abortController?.signal.aborted) {
+            return await this.handleInterrupt(null, message.content);
+          }
+
           const toolName = toolCall?.function?.name;
           let args = toolCall.function.arguments;
 
@@ -366,6 +404,29 @@ class AgentLoop {
             console.log(chalk.white(args.previousStepContent || ""));
 
           const label = describeToolCall(toolName, args);
+
+          let callSignature = "";
+          if (READ_ONLY_TOOLS.has(toolName)) {
+            const { previousStepContent: _ignored, ...argsForSig } = args;
+            callSignature = `${toolName}:${JSON.stringify(argsForSig)}`;
+            const cached = readOnlyCallCache.get(callSignature);
+            if (cached !== undefined) {
+              console.log(
+                `${chalk.gray("●")} ${chalk.gray(label)} ${chalk.dim("(already ran this turn, reusing result)")}\n`,
+              );
+              this.messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: cached,
+              });
+              await saveSession(this.sessionId, {
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: cached,
+              });
+              continue;
+            }
+          }
 
           if (!toolFunc) {
             this.messages.push({
@@ -475,6 +536,10 @@ class AgentLoop {
               `\n...[truncated ${result.length - limit} chars, use readFile with offset and limit for more]`
             : result;
 
+          if (callSignature) {
+            readOnlyCallCache.set(callSignature, finalResult);
+          }
+
           this.messages.push({
             role: "tool",
             tool_call_id: toolCall.id,
@@ -576,7 +641,9 @@ class AgentLoop {
         }
       }
     } catch (streamErr: any) {
-      if (!streamErr?.message?.includes("JSON")) {
+      const isAbort =
+        streamErr?.name === "AbortError" || this.abortController?.signal.aborted;
+      if (!isAbort && !streamErr?.message?.includes("JSON")) {
         throw streamErr;
       }
     } finally {

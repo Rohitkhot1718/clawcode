@@ -58,33 +58,9 @@ async function getSessionBannerModel(sessionId: string): Promise<any | null> {
   return matched ?? { name: meta.model, provider: meta.provider };
 }
 
+
 async function runWithInterrupt<T>(task: () => Promise<T>): Promise<T> {
-  const stdin = process.stdin;
-  const isTTY = Boolean(stdin.isTTY);
-  const wasRaw = stdin.isRaw;
-
-  if (isTTY) stdin.setRawMode(true);
-
-  const onKeypress = (_str: string, key: any) => {
-    if (key?.ctrl && key?.name === "c") {
-      if (isTTY) stdin.setRawMode(wasRaw ?? false);
-      process.exit(0);
-    }
-    if (key?.name === "escape") {
-      agent.interrupt();
-    }
-  };
-
-  if (isTTY) stdin.on("keypress", onKeypress);
-
-  try {
-    return await task();
-  } finally {
-    if (isTTY) {
-      stdin.removeListener("keypress", onKeypress);
-      stdin.setRawMode(wasRaw ?? false);
-    }
-  }
+  return task();
 }
 
 async function startREPL() {

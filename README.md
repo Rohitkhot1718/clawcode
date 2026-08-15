@@ -11,9 +11,11 @@ Clawcode is an agentic system that interprets user requests in natural language 
 - **Natural Language Task Execution** - Interpret and execute development tasks from text descriptions
 - **Multi-Step Workflow Orchestration** - Automatically decompose complex tasks into sequential operations
 - **Real-Time Streaming Output** - Token-by-token response delivery for improved user experience
-- **Session Context Management** - Maintain conversation history and state throughout sessions
+- **Session Context Management** - Maintain conversation history and state throughout sessions, with the ability to resume any prior session (see [Session Management](#session-management))
+- **Persistent Memory** - Save durable notes that carry over across sessions
+- **Permission-Gated Actions** - State-changing tools (file writes, shell commands) require approval, with destructive/caution command detection (see [Permissions](#permissions))
 - **File System Operations** - Create, read, modify, and analyze files programmatically
-- **Web Integration** - Search and retrieve external information when required
+- **Web Integration** - Search, fetch URLs, and retrieve external information when required
 
 ## Installation
 
@@ -92,6 +94,7 @@ Available commands within REPL:
 - `/config` - Access configuration interface
 - `/exit` - Exit application
 - `/help` - Display available commands
+- `Esc` - Stop the current response/tool call
 
 ### Single Command Execution
 
@@ -138,20 +141,46 @@ The agent operates through the following iterative cycle:
 | listDirectory | Enumerate directory contents |
 | grep | Search file contents |
 | webSearch | Internet information retrieval |
+| fetchURL | Fetch and read content from a specific URL |
 | startBackground | Initiate background processes |
+| readProcessOutput | Read output from a running background process |
 | stopProcess | Terminate background processes |
 | getLineCount | Determine file line count |
+| saveMemoryNote | Persist a note to memory for future sessions |
+
+## Session Management
+
+Every REPL run is saved to disk automatically (`~/.clawcode/sessions/`) with a name derived from the first message.
+
+```bash
+# List saved sessions and resume interactively
+clawcode --resume
+
+# Resume a specific session by ID
+clawcode --resume <sessionId>
+```
+
+The session ID and resume command are also printed whenever you exit with `/exit` or Ctrl+C, so you can pick a session back up later without hunting for the ID.
+
+## Permissions
+
+Tools that can change state (`createFile`, `editFile`, `runCommand`, etc.) prompt for approval before running. Read-only tools (`readFile`, `listDirectory`, `grep`, `getLineCount`, `readProcessOutput`, `webSearch`) never prompt.
+
+- Shell commands are scanned for **destructive** patterns (`rm`, `format`, `git reset --hard`, `git push --force`, etc.) and **caution** patterns (package installs, `git push`, network fetches) and flagged accordingly in the prompt.
+- Approvals can be granted once or persisted for the current project, stored in `.clawcode/settings.json` in the project directory (analogous to Claude Code's `.claude/settings.local.json`).
 
 ## Project Structure
 
 ```
 clawcode/
 ├── src/
-│   ├── agent/       # Agent loop implementation
-│   ├── cli/         # Command-line interface
+│   ├── agent/       # Agent loop implementation and permission manager
+│   ├── cli/         # Command-line interface, REPL input, banner
 │   ├── config/      # Configuration management
+│   ├── memory/      # Persistent cross-session memory notes
 │   ├── prompts/     # Prompt templates
 │   ├── providers/   # LLM provider integrations
+│   ├── session/     # Session persistence, listing, and resume
 │   ├── tools/       # Tool implementations
 │   └── utils/       # Utility functions
 ├── dist/            # Compiled JavaScript output

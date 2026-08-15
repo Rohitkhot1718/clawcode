@@ -35,8 +35,7 @@ export class OpenAIProvider {
             model: this.model,
             messages,
             stream: true,
-            ...(tools ? { tools } : {}),
-            tool_choice: tools ? "auto" : "none",
+            ...(tools ? { tools, tool_choice: "auto" } : {}),
           },
           signal ? { signal } : undefined,
         );

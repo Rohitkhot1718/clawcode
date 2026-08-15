@@ -263,11 +263,7 @@ export class PermissionManager {
     opts: { isCommandTool: boolean; command: string; destructive: boolean },
   ): Promise<PermissionDecision> {
     const icon = opts.destructive ? chalk.red("⚠") : chalk.yellow("●");
-    console.log(`\n${icon} Clawcode wants to run:`);
-    console.log(`   ${chalk.bold(label)}`);
-    if (opts.destructive) {
-      console.log(chalk.red("   This action may delete or modify data."));
-    }
+    console.log(`\n${icon} Clawcode wants to run: ${chalk.bold(label)}`);
 
     const target = opts.isCommandTool
       ? `"${commandPrefix(opts.command)}"`

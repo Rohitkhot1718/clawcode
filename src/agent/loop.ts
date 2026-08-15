@@ -281,10 +281,14 @@ class AgentLoop {
     await saveSession(this.sessionId, { role: "user", content: userInput });
 
     const readOnlyCallCache = new Map<string, string>();
-    this.abortController = new AbortController();
 
     while (true) {
       await this.trimContext();
+
+      // A fresh controller per iteration — reusing one AbortSignal across
+      // many chat() calls in a long, multi-tool-call turn was piling up
+      // internal SDK listeners on it and tripping Node's MaxListeners warning.
+      this.abortController = new AbortController();
 
       const spinner = ora("Thinking...").start();
 

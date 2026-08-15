@@ -64,6 +64,7 @@ export function askInput(promptText = "> "): Promise<string> {
     let scrollOffset = 0;
     let mentionStart = -1;
     let renderedExtraLines = 0;
+    let priorRows = 1;
     let historyIndex = history.length;
     let draft = "";
     let finished = false;
@@ -102,7 +103,17 @@ export function askInput(promptText = "> "): Promise<string> {
     }
 
     function render() {
+      const width = process.stdout.columns || 80;
+
+      // A long buffer can visually wrap across multiple terminal rows —
+      // \r alone only returns to the start of the CURRENT row, not the
+      // start of the previous render, so move up to compensate first.
+      if (priorRows > 1) {
+        process.stdout.write(`\x1b[${priorRows - 1}A`);
+      }
       process.stdout.write("\r\x1b[0J");
+
+      const mainText = promptText + buffer;
       process.stdout.write(chalk.cyan(promptText) + buffer);
 
       renderedExtraLines = 0;
@@ -132,12 +143,25 @@ export function askInput(promptText = "> "): Promise<string> {
         }
       }
 
+      const mainRows = Math.max(1, Math.ceil(mainText.length / width));
+      priorRows = mainRows + renderedExtraLines;
+
       if (renderedExtraLines > 0) {
         process.stdout.write(`\x1b[${renderedExtraLines}A`);
       }
+
+      // Reposition the cursor to its real row/column within the (possibly
+      // wrapped) main text, not just an unconditional rightward move.
+      const cursorAbsCol = promptText.length + cursor;
+      const cursorRow = Math.floor(cursorAbsCol / width);
+      const cursorCol = cursorAbsCol % width;
+      const lastRow = mainRows - 1;
+
       process.stdout.write("\r");
-      const col = promptText.length + cursor;
-      if (col > 0) process.stdout.write(`\x1b[${col}C`);
+      if (lastRow > cursorRow) {
+        process.stdout.write(`\x1b[${lastRow - cursorRow}A`);
+      }
+      if (cursorCol > 0) process.stdout.write(`\x1b[${cursorCol}C`);
     }
 
     function acceptSuggestion() {

@@ -14,7 +14,7 @@ import {
   listSessions,
   printSession,
 } from "./src/session/session.js";
-import { prompt, clearLine } from "./src/utils/enquirerPrompt.js";
+import { prompt, clearLine, promptActive } from "./src/utils/enquirerPrompt.js";
 
 dotenv.config();
 
@@ -80,6 +80,12 @@ function setupGlobalKeyHandling() {
   stdin.resume();
 
   stdin.on("keypress", (_str, key) => {
+    // While an Enquirer prompt (e.g. /model, /config) owns the terminal,
+    // let it handle its own keystrokes — including its own Ctrl+C
+    // cancellation. Racing an immediate process.exit() against Enquirer's
+    // custom rendering here is what corrupts the terminal after /model.
+    if (promptActive) return;
+
     if (key?.ctrl && key?.name === "c") {
       const sessionId = agent.getSessionId();
       if (sessionId) {

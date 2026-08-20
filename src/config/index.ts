@@ -38,6 +38,7 @@ export async function saveConfig(newData: Partial<any>) {
     ...existing,
     ...newData,
     keys: { ...existing.keys, ...(newData.keys || {}) },
+    endpoints: { ...existing.endpoints, ...(newData.endpoints || {}) },
     models: [
       ...existing.models,
       ...(newData.models || []).filter(

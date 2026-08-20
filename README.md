@@ -76,9 +76,14 @@ Configuration is stored in `~/.clawcode/config.json` with the following structur
   ],
   "keys": {
     "groq": "api_key_here"
+  },
+  "endpoints": {
+    "myCustomProvider": "https://my-openai-compatible-host/v1"
   }
 }
 ```
+
+`endpoints` is only populated for custom, non-builtin providers (see [Supported Providers](#supported-providers)).
 
 ## Usage
 
@@ -95,6 +100,7 @@ Available commands within REPL:
 - `/exit` - Exit application
 - `/help` - Display available commands
 - `Esc` - Stop the current response/tool call
+- `Ctrl+C` - Stop the current response/tool call if one is running; quits the app if idle
 
 ### Single Command Execution
 
@@ -103,19 +109,78 @@ Execute a task directly without entering REPL:
 clawcode "<task_description>"
 ```
 
+### Skills
+
+Skills are pre-written, on-demand guidance the agent reads before tackling a matching task (e.g. project-specific conventions, a design checklist). There's no CLI command for these — create them directly under `~/.clawcode/skills/`.
+
+**Add a skill** as a folder with a `SKILL.md`:
+```
+~/.clawcode/skills/
+└── node-backend/
+    ├── SKILL.md
+    ├── examples/
+    ├── scripts/
+    └── resources/
+```
+
+`SKILL.md` needs YAML frontmatter with a `name` and `description`:
+```markdown
+---
+name: node-backend
+description: Conventions for building Node.js backend APIs — routing, error handling, validation, and project structure.
+---
+
+# Node Backend
+...guidance content...
+```
+
+A flat `<name>.md` file directly in `~/.clawcode/skills/` (no subfolder) also works for simple cases.
+
+**How it's used**: at the start of every session, the agent sees each skill's `name` and `description` (not its full content). Before a non-trivial task, if a skill's description matches the task's domain, the agent calls `getSkill` to read the full file and follow its guidance — automatically, without being asked. The `description` is what drives matching, so make it specific about what the skill covers.
+
+### MCP (Model Context Protocol)
+
+Clawcode can connect to external MCP servers and let the agent call their tools alongside its built-in ones.
+
+**Register a server** via the CLI:
+```bash
+clawcode add-mcp --name myServer --command node --args "/path/to/server.js --port 3000" --env "API_KEY=abc123,DEBUG=true"
+```
+
+- `--args` is a single space-separated string of arguments
+- `--env` is optional, comma-separated `KEY=VALUE` pairs
+
+This writes to `~/.clawcode/.mcp.json` (created automatically on first run), which you can also edit directly:
+```json
+{
+  "mcpServers": {
+    "myServer": {
+      "command": "node",
+      "args": ["/path/to/server.js", "--port", "3000"],
+      "env": { "API_KEY": "abc123", "DEBUG": "true" }
+    }
+  }
+}
+```
+
+Each entry is spawned over stdio using the given `command`/`args`/`env` — only stdio-based servers are supported currently, not remote/HTTP MCP servers. All configured servers are connected automatically at startup, before the REPL launches.
+
+**Using MCP tools**: once connected, the agent can call `listMCPTools` with a `serverName` to discover a server's tools, and `callMCPTool` with `serverName`, `toolName`, and `args` to invoke one — no extra setup needed on your end, just ask the agent to use the server by name.
+
 ## Command Reference
 
 | Command | Description |
 |---------|-------------|
 | `use <model>` | Set default model |
 | `models` | List configured models |
-| `add-model --provider <p> --model <m>` | Register new model |
+| `add-model --provider <p> --model <m> [--base-url <url>]` | Register new model (`--base-url` required for non-builtin providers) |
 | `remove-model <model>` | Unregister model |
 | `set-key --provider <p> --key <k>` | Store API credentials |
 | `change-key --provider <p> --key <k>` | Update API credentials |
 | `remove-key --provider <p>` | Remove API credentials |
 | `config` | Display current configuration |
 | `reset` | Reset configuration to defaults |
+| `add-mcp --name <n> --command <c> [--args <a>] [--env <e>]` | Register a new MCP server |
 
 ## Architecture
 
@@ -147,6 +212,9 @@ The agent operates through the following iterative cycle:
 | stopProcess | Terminate background processes |
 | getLineCount | Determine file line count |
 | saveMemoryNote | Persist a note to memory for future sessions |
+| getSkill | Read a skill's full guidance file (see [Skills](#skills)) |
+| listMCPTools | List tools exposed by a connected MCP server |
+| callMCPTool | Invoke a tool on a connected MCP server |
 
 ## Session Management
 
@@ -203,10 +271,18 @@ npm install -g .
 
 ## Supported Providers
 
+Built in, no extra setup:
 - Groq
 - OpenRouter
 - Ollama
 - Gemini
+- NVIDIA
+
+Any other OpenAI-compatible endpoint (self-hosted vLLM/LM Studio, Azure OpenAI proxy, etc.) can be registered as a custom provider:
+```bash
+clawcode set-key --provider myapi --key sk-xxx
+clawcode add-model --provider myapi --model llama-3.1 --base-url https://myapi.example.com/v1
+```
 
 ## Troubleshooting
 
@@ -241,9 +317,9 @@ npm install -g .
 
 ### Adding LLM Providers
 
-1. Create provider class in `src/providers/`
-2. Implement required interface methods
-3. Register in provider factory
+Any OpenAI-compatible provider can be added without code changes — see [Supported Providers](#supported-providers) for the `set-key` / `add-model --base-url` flow.
+
+To add a new **builtin** provider (no `--base-url` needed by users), add an entry to `BUILTIN_ENDPOINTS` in `src/providers/index.ts`.
 
 ### Modifying System Prompts
 

@@ -119,14 +119,21 @@ export async function listSessions(): Promise<SessionSummary[]> {
 
 export async function printSession(sessionId: string) {
   const sessionData = await readSessionLines(sessionId);
+  let lastMetaProvider: string | undefined;
+  let lastMetaModel: string | undefined;
 
   sessionData.forEach((msg, i) => {
     if (msg.type === "meta") {
-      if (i > 0) {
+      const changed =
+        i > 0 &&
+        (msg.provider !== lastMetaProvider || msg.model !== lastMetaModel);
+      if (changed) {
         console.log(
           chalk.yellow(`↻ Switched to ${msg.model} (${msg.provider})\n`),
         );
       }
+      lastMetaProvider = msg.provider;
+      lastMetaModel = msg.model;
       return;
     }
 

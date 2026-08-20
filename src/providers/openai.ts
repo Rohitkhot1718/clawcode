@@ -5,7 +5,10 @@ export class OpenAIProvider {
   private model: string;
 
   constructor(apiKey: string, baseURL: string, model: string) {
-    this.client = new OpenAI({ apiKey, baseURL });
+    // maxRetries: 0 — chat() below already retries with its own backoff;
+    // leaving the SDK's default retries on doubled up attempts and piled
+    // up abort listeners on the shared AbortSignal (MaxListenersExceededWarning).
+    this.client = new OpenAI({ apiKey, baseURL, maxRetries: 0 });
     this.model = model;
   }
 

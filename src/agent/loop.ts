@@ -32,6 +32,9 @@ const toolsMap: any = {
   fetchURL: (args: any) => tools.fetchURL(args),
   getLineCount: (args: any) => tools.getLineCount(args),
   saveMemoryNote: (args: any) => tools.saveMemoryNote(args),
+  getSkill: (args: any) => tools.getSkill(args),
+  listMCPTools: (args: any) => tools.listMCPTools(args),
+  callMCPTool: (args: any) => tools.callMCPTool(args),
 };
 
 export const TOOL_LABELS: Record<string, string> = {
@@ -48,6 +51,9 @@ export const TOOL_LABELS: Record<string, string> = {
   readProcessOutput: "Logs",
   stopProcess: "Stop",
   saveMemoryNote: "Memory",
+  getSkill: "Skill",
+  listMCPTools: "MCPToolLists",
+  callMCPTool: "MCPToolCall",
 };
 
 function displayPath(p: any): string {
@@ -81,6 +87,10 @@ export function looksLikeTextToolCall(content: string): boolean {
       "url",
       "oldContent",
       "newContent",
+      "skillPath",
+      "serverName",
+      "toolName",
+      "args",
     ];
     return Object.keys(obj).some((k) => toolish.includes(k));
   } catch {
@@ -117,6 +127,12 @@ export function describeToolCall(toolName: string, args: any): string {
       return `${name}(${clip(args.id)})`;
     case "saveMemoryNote":
       return `${name}("${clip(args.note, 60)}")`;
+    case "getSkill":
+      return `${name}(${clip(displayPath(args.skillPath))})`;
+    case "listMCPTools":
+      return `${name}(${clip(args.serverName)})`;
+    case "callMCPTool":
+      return `${name}(${clip(args.serverName)}, ${clip(args.toolName)})`;
     default:
       return name;
   }
@@ -416,7 +432,7 @@ class AgentLoop {
             const cached = readOnlyCallCache.get(callSignature);
             if (cached !== undefined) {
               console.log(
-                `${chalk.gray("●")} ${chalk.gray(label)} ${chalk.dim("(already ran this turn, reusing result)")}\n`,
+                `${chalk.gray("●")} ${chalk.gray(label)} ${chalk.dim("(already ran this turn, reusing result)")}`,
               );
               this.messages.push({
                 role: "tool",
@@ -445,7 +461,7 @@ class AgentLoop {
           const decision = await permissions.check(toolName, args, label);
           if (decision.behavior === "deny") {
             console.log(
-              `${chalk.red("●")} ${chalk.gray(label)} — denied by user\n`,
+              `${chalk.red("●")} ${chalk.gray(label)} — denied by user`,
             );
             this.messages.push({
               role: "tool",
@@ -496,8 +512,8 @@ class AgentLoop {
             spinner.stopAndPersist({
               symbol: succeeded ? chalk.green("●") : chalk.red("●"),
               text: succeeded
-                ? `${chalk.gray(label)}\n`
-                : `${chalk.gray(label)} — ${String(parsed?.error ?? "failed").split("\n")[0]}\n`,
+                ? chalk.gray(label)
+                : `${chalk.gray(label)} — ${String(parsed?.error ?? "failed").split("\n")[0]}`,
             });
 
             if (succeeded && toolName === "createFile") {

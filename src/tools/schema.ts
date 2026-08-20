@@ -112,7 +112,8 @@ export const toolSchemas: any[] = [
           },
           newContent: {
             type: "string",
-            description: "Replacement or inserted text. Empty string deletes the matched content/lines.",
+            description:
+              "Replacement or inserted text. Empty string deletes the matched content/lines.",
           },
           previousStepContent: {
             type: "string",
@@ -257,11 +258,13 @@ export const toolSchemas: any[] = [
           },
           method: {
             type: "string",
-            description: "The HTTP method (GET, POST, PUT, DELETE). Defaults to GET.",
+            description:
+              "The HTTP method (GET, POST, PUT, DELETE). Defaults to GET.",
           },
           body: {
             type: "string",
-            description: "Optional raw JSON request body for POST and PUT requests",
+            description:
+              "Optional raw JSON request body for POST and PUT requests",
           },
           previousStepContent: {
             type: "string",
@@ -317,5 +320,79 @@ export const toolSchemas: any[] = [
         required: ["note", "previousStepContent"],
       },
     },
-  }
+  },
+  {
+    type: "function",
+    function: {
+      name: "getSkill",
+      description:
+        "Retrieve the content of a skill's main file, or any other file it references (script, example, reference doc) that lives in the same folder.",
+      parameters: {
+        type: "object",
+        properties: {
+          skillPath: { type: "string" },
+          previousStepContent: {
+            type: "string",
+            description:
+              "A natural, conversational summary of the previous task or the current step.",
+          },
+        },
+        required: ["skillPath", "previousStepContent"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "listMCPTools",
+      description: "List all available MCP tools and their descriptions.",
+      parameters: {
+        type: "object",
+        properties: {
+          serverName: {
+            type: "string",
+            description: "The name of the MCP server for which to list tools.",
+          },
+          previousStepContent: {
+            type: "string",
+            description:
+              "A natural, conversational summary of the previous task or the current step.",
+          },
+        },
+        required: ["previousStepContent"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "callMCPTool",
+      description:
+        "Call a specific MCP tool with the provided arguments and return its output.",
+      parameters: {
+        type: "object",
+        properties: {
+          serverName: {
+            type: "string",
+            description: "The name of the MCP server to call the tool on.",
+          },
+          toolName: {
+            type: "string",
+            description: "The name of the MCP tool to call.",
+          },
+          args: {
+            type: "object",
+            description:
+              "A JSON object containing the arguments to pass to the MCP tool.",
+          },
+          previousStepContent: {
+            type: "string",
+            description:
+              "A natural, conversational summary of the previous task or the current step.",
+          },
+        },
+        required: ["serverName", "toolName", "args", "previousStepContent"],
+      },
+    },
+  },
 ];

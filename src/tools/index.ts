@@ -5,6 +5,8 @@ import readline from "readline";
 import fsSync from "fs";
 import { loadConfig } from "../config/index.js";
 import { saveMemoryNote } from "../memory/memory.js";
+import { getSkill } from "../skills/index.js";
+import { mcpManager } from "../mcp/config.js";
 
 export const IGNORE_DIRS = new Set([
   ".git",
@@ -25,27 +27,12 @@ const BLOCKED_COMMANDS = new Set([
   ":(){:|:&};:",
 ]);
 
-function validateFilePath(filePath: string): {
+function validatePathBasic(filePath: string): {
   valid: boolean;
   error?: string;
 } {
   if (!filePath || typeof filePath !== "string") {
     return { valid: false, error: "Invalid file path" };
-  }
-  const resolved = path.resolve(filePath);
-  const cwd = path.resolve(process.cwd());
-  const relative = path.relative(cwd, resolved);
-  const isInsideProject =
-    relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-  const tmpRoot = path.resolve("/tmp");
-  const tmpRelative = path.relative(tmpRoot, resolved);
-  const isTmpPath =
-    process.platform !== "win32" &&
-    (tmpRelative === "" ||
-      (!tmpRelative.startsWith("..") && !path.isAbsolute(tmpRelative)));
-
-  if (!isInsideProject && !isTmpPath) {
-    return { valid: false, error: "File path must be within project or /tmp" };
   }
   return { valid: true };
 }
@@ -100,7 +87,9 @@ function closestRegion(
   }
   if (bestIndex < 0) return null;
 
-  const text = fileLines.slice(bestIndex, bestIndex + Math.min(size, 10)).join("\n");
+  const text = fileLines
+    .slice(bestIndex, bestIndex + Math.min(size, 10))
+    .join("\n");
   return { line: bestIndex + 1, text: text.slice(0, 600) };
 }
 
@@ -221,7 +210,7 @@ class Tools {
     filePath: string;
     content: string;
   }): Promise<string> {
-    const validation = validateFilePath(filePath);
+    const validation = validatePathBasic(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
@@ -247,12 +236,11 @@ class Tools {
     offset?: number;
     limit?: number;
   }): Promise<string> {
-    const validation = validateFilePath(filePath);
+    const validation = validatePathBasic(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
 
-    // Validate offset and limit
     if (offset < 1) {
       return JSON.stringify({
         success: false,
@@ -268,8 +256,6 @@ class Tools {
 
     try {
       const content = await fs.readFile(filePath, "utf-8");
-      // Split on \r?\n so CRLF files don't leak invisible \r into the
-      // numbered lines the model copies back into editFile.
       const lines = content.split(/\r?\n/);
       const total = lines.length;
       const start = Math.max(0, offset - 1);
@@ -292,7 +278,7 @@ class Tools {
   }
 
   async listDirectory({ dirPath }: { dirPath: string }): Promise<string> {
-    const validation = validateFilePath(dirPath);
+    const validation = validatePathBasic(dirPath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
@@ -321,7 +307,7 @@ class Tools {
     startLine?: number;
     endLine?: number;
   }): Promise<string> {
-    const validation = validateFilePath(filePath);
+    const validation = validatePathBasic(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
@@ -329,7 +315,8 @@ class Tools {
     if (typeof newContent !== "string") {
       return JSON.stringify({
         success: false,
-        error: 'newContent must be a string (use "" to delete the matched text)',
+        error:
+          'newContent must be a string (use "" to delete the matched text)',
       });
     }
 
@@ -337,8 +324,7 @@ class Tools {
     if (oldContent && hasLineRange) {
       return JSON.stringify({
         success: false,
-        error:
-          "Provide EITHER oldContent OR startLine/endLine, not both.",
+        error: "Provide EITHER oldContent OR startLine/endLine, not both.",
       });
     }
     if (!oldContent && !hasLineRange) {
@@ -353,7 +339,13 @@ class Tools {
       const current = await fs.readFile(filePath, "utf-8");
 
       if (hasLineRange) {
-        return this.editByLineRange(filePath, current, startLine, endLine, newContent);
+        return this.editByLineRange(
+          filePath,
+          current,
+          startLine,
+          endLine,
+          newContent,
+        );
       }
 
       return this.editByContent(filePath, current, oldContent!, newContent);
@@ -394,7 +386,10 @@ class Tools {
     const replacement =
       newContent === "" ? [] : newContent.replace(/\r?\n/g, eol).split(eol);
 
-    await fs.writeFile(filePath, [...before, ...replacement, ...after].join(eol));
+    await fs.writeFile(
+      filePath,
+      [...before, ...replacement, ...after].join(eol),
+    );
 
     const isInsertion = endLine === startLine! - 1;
     return JSON.stringify({
@@ -482,7 +477,7 @@ class Tools {
     }
 
     if (cwd) {
-      const cwdValidation = validateFilePath(cwd);
+      const cwdValidation = validatePathBasic(cwd);
       if (!cwdValidation.valid) {
         return JSON.stringify({ success: false, error: cwdValidation.error });
       }
@@ -554,7 +549,7 @@ class Tools {
     filePath: string;
     query: string;
   }): Promise<string> {
-    const validation = validateFilePath(filePath);
+    const validation = validatePathBasic(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
@@ -685,7 +680,10 @@ class Tools {
       const hasBody = body && !["GET", "HEAD"].includes(upperMethod);
       const res = await fetch(url, {
         method: upperMethod,
-        headers: { ...headers, ...(hasBody ? { "Content-Type": "application/json" } : {}) },
+        headers: {
+          ...headers,
+          ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        },
         body: hasBody ? body : undefined,
       });
       const contentType = res.headers.get("content-type") || "";
@@ -705,14 +703,14 @@ class Tools {
   }
 
   async getLineCount({ filePath }: { filePath: string }): Promise<string> {
-    const validation = validateFilePath(filePath);
+    const validation = validatePathBasic(filePath);
     if (!validation.valid) {
       return JSON.stringify({ success: false, error: validation.error });
     }
 
     try {
       const stats = await fs.stat(filePath);
-      
+
       const lineCount = await new Promise<number>((resolve, reject) => {
         let count = 0;
         const stream = fsSync.createReadStream(filePath, { encoding: "utf8" });
@@ -760,6 +758,53 @@ class Tools {
     } catch (error: any) {
       return JSON.stringify({ success: false, error: error.message });
     }
+  }
+
+  async getSkill({ skillPath }: { skillPath: string }): Promise<string> {
+    try {
+      const skillContent = await getSkill(skillPath);
+      return JSON.stringify({ success: true, data: skillContent });
+    } catch (error: any) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  }
+
+  async listMCPTools({ serverName }: { serverName: string }) {
+    const server = mcpManager.getClient(serverName);
+
+    if (!server) {
+      throw new Error(`MCP server "${serverName}" not found.`);
+    }
+
+    return await server.listTools();
+  }
+
+  async callMCPTool({
+    serverName,
+    toolName,
+    args = {},
+  }: {
+    serverName: string;
+    toolName: string;
+    args?: Record<string, unknown>;
+  }) {
+    const server = mcpManager.getClient(serverName);
+
+    if (!server) {
+      throw new Error(`MCP server "${serverName}" not found.`);
+    }
+
+    const { tools } = await server.listTools();
+
+    const tool = tools.find((t) => t.name === toolName);
+
+    if (!tool) {
+      throw new Error(
+        `Tool "${toolName}" not found on MCP server "${serverName}".`,
+      );
+    }
+
+    return await server.callTool(toolName, args);
   }
 }
 

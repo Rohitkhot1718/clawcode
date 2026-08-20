@@ -15,6 +15,7 @@ import {
   printSession,
 } from "./src/session/session.js";
 import { prompt, clearLine, promptActive } from "./src/utils/enquirerPrompt.js";
+import { mcpManager } from "./src/mcp/config.js";
 
 dotenv.config();
 
@@ -59,15 +60,9 @@ async function getSessionBannerModel(sessionId: string): Promise<any | null> {
   return matched ?? { name: meta.model, provider: meta.provider };
 }
 
-
 let isRunning = false;
 let globalKeyHandlingSetup = false;
 
-// Raw mode + keypress decoding are enabled exactly once, for the whole
-// process lifetime, right before the REPL starts — never toggled off again.
-// A single persistent listener handles Ctrl+C (always) and Escape (only
-// while a turn is actually running). This replaces the earlier per-turn
-// attach/detach approach, which caused intermittent input breakage.
 function setupGlobalKeyHandling() {
   if (globalKeyHandlingSetup) return;
   globalKeyHandlingSetup = true;
@@ -80,13 +75,13 @@ function setupGlobalKeyHandling() {
   stdin.resume();
 
   stdin.on("keypress", (_str, key) => {
-    // While an Enquirer prompt (e.g. /model, /config) owns the terminal,
-    // let it handle its own keystrokes — including its own Ctrl+C
-    // cancellation. Racing an immediate process.exit() against Enquirer's
-    // custom rendering here is what corrupts the terminal after /model.
     if (promptActive) return;
 
     if (key?.ctrl && key?.name === "c") {
+      if (isRunning) {
+        agent.interrupt();
+        return;
+      }
       const sessionId = agent.getSessionId();
       if (sessionId) {
         console.log(chalk.gray("\nResume this session with:"));
@@ -143,7 +138,7 @@ async function startREPL() {
         console.log(modelLine(await getActiveModel()));
         console.log(
           chalk.gray(
-            "\n  /config → add new model   /model → switch model\n  /exit   → quit            /help  → show commands\n  Esc     → stop the current response/tool call\n",
+            "\n  /config → add new model   /model → switch model\n  /exit   → quit            /help  → show commands\n  Esc     → stop the current response/tool call\n  Ctrl+C  → stop the current response, or quit if idle\n",
           ),
         );
         continue;
@@ -199,6 +194,7 @@ async function main() {
       process.exit(1);
     }
 
+    await mcpManager.connectAll();
     await checkConfig();
     printBanner(await getSessionBannerModel(sessionId));
 
@@ -214,11 +210,13 @@ async function main() {
     return;
   }
 
+  
+  await mcpManager.connectAll();
+  
   await checkConfig();
-
   printBanner(await getActiveModel());
-
   setupGlobalKeyHandling();
+
   await startREPL();
 }
 

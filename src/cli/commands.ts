@@ -6,10 +6,12 @@ import os from "os";
 import path from "path";
 import { prompt } from "../utils/enquirerPrompt.js";
 import { agent } from "../agent/loop.js";
+import { mcpManager } from "../mcp/config.js";
+import { BUILTIN_ENDPOINTS } from "../providers/index.js";
 
 const CONFIG_PATH = path.join(os.homedir(), ".clawcode", "config.json");
 
-const PROVIDERS = ["groq", "ollama", "openRouter", "gemini"];
+const PROVIDERS = Object.keys(BUILTIN_ENDPOINTS);
 
 class CLICommands {
   async useModel(model: string): Promise<void> {
@@ -79,6 +81,7 @@ class CLICommands {
     model: string,
     name?: string,
     contextLimit?: number,
+    baseURL?: string,
   ): Promise<void> {
     const config = await loadConfig();
     if (!config) {
@@ -86,15 +89,21 @@ class CLICommands {
       return;
     }
 
-    const { models, keys } = config;
-    const providerList = PROVIDERS as readonly string[];
+    const { models, keys, endpoints = {} } = config;
 
-    const isProviderExists = providerList.includes(provider);
-    if (!isProviderExists) {
+    const isBuiltin = PROVIDERS.includes(provider);
+    if (!isBuiltin && !baseURL && !endpoints[provider]) {
       console.log(`The ${provider} not supported`);
       console.log("Supported providers:");
       PROVIDERS.forEach((p) => console.log(`  - ${p}`));
+      console.log(
+        "\nOr register a custom OpenAI-compatible endpoint by adding --base-url <url>.",
+      );
       return;
+    }
+
+    if (!isBuiltin && baseURL) {
+      await saveConfig({ endpoints: { [provider]: baseURL } });
     }
 
     const isModelExists = models.find((m: any) => m.id === model);
@@ -191,14 +200,8 @@ class CLICommands {
   async setKey(provider: string, key: string) {
     const { keys }: any = await loadConfig();
 
-    const isProviderExists = PROVIDERS.includes(provider as any);
-    if (!isProviderExists) {
-      console.log(`The ${provider} not supported`);
-      console.log("Supported providers");
-      PROVIDERS.forEach((p) => console.log(p));
-      return;
-    }
-
+    // Any provider name is accepted here — built-in providers work out of
+    // the box, custom ones are registered afterward via `add-model --base-url`.
     const isApiKeyExists = keys[provider];
     if (isApiKeyExists) {
       console.log(
@@ -214,11 +217,6 @@ class CLICommands {
   async changeKey(provider: string, key: string) {
     const config = await loadConfig();
     const { keys = {} }: any = config;
-
-    if (!PROVIDERS.includes(provider as any)) {
-      console.log(`The ${provider} not supported`);
-      return;
-    }
 
     if (!keys[provider]) {
       console.log(`No API key found for ${provider}. Use set-key first.`);
@@ -237,11 +235,6 @@ class CLICommands {
   async removeKey(provider: string) {
     const config = await loadConfig();
     const { keys = {} }: any = config;
-
-    if (!PROVIDERS.includes(provider as any)) {
-      console.log(`The ${provider} not supported`);
-      return;
-    }
 
     if (!keys[provider]) {
       console.log(`No API key found for ${provider}`);
@@ -269,7 +262,12 @@ class CLICommands {
   async showConfig() {
     const config = await loadConfig();
 
-    const { keys = {}, models = [], default: defaultModelId }: any = config;
+    const {
+      keys = {},
+      endpoints = {},
+      models = [],
+      default: defaultModelId,
+    }: any = config;
 
     console.log("🔧 Configuration\n");
 
@@ -289,12 +287,24 @@ class CLICommands {
       return key.length > 8 ? `${key.slice(0, 4)}****${key.slice(-4)}` : "****";
     };
 
-    for (const provider of PROVIDERS.sort()) {
+    const allProviders = [
+      ...new Set([
+        ...PROVIDERS,
+        ...Object.keys(keys),
+        ...Object.keys(endpoints),
+      ]),
+    ].sort();
+
+    for (const provider of allProviders) {
       console.log(`  ${provider}`);
 
       const apiKey = keys[provider];
 
       console.log(`    API Key : ${maskKey(apiKey)}`);
+
+      if (endpoints[provider]) {
+        console.log(`    Base URL: ${endpoints[provider]}`);
+      }
 
       const providerModels = models
         .filter((m: any) => m.provider === provider)
@@ -349,12 +359,14 @@ class CLICommands {
       return;
     }
     try {
+      await mcpManager.connectAll();
       await agent.run(input, provider, model, selectedModel.contextLimit);
     } catch (err: any) {
       console.log("Failed to execute:");
       console.log(err?.message || err);
     }
   }
+
 }
 
 export const cliCommands = new CLICommands();

@@ -6,6 +6,8 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { loadMemory } from "../memory/memory.js";
 import { loadConfig } from "../config/index.js";
+import { loadSkillsDir } from "../skills/index.js";
+import { mcpManager } from "../mcp/config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,7 +26,8 @@ async function getGitInfo(): Promise<string> {
       "--porcelain",
     ]);
     const changeCount = status.split("\n").filter((l) => l.trim()).length;
-    const state = changeCount === 0 ? "clean" : `${changeCount} uncommitted change(s)`;
+    const state =
+      changeCount === 0 ? "clean" : `${changeCount} uncommitted change(s)`;
     return `${branch.trim() || "(detached HEAD)"}, ${state}`;
   } catch {
     return "not a git repo";
@@ -35,7 +38,8 @@ async function getConfiguredModelsList(): Promise<string> {
   try {
     const config: any = await loadConfig();
     const models: any[] = config?.models ?? [];
-    if (models.length === 0) return "(none configured — run `clawcode add-model`)";
+    if (models.length === 0)
+      return "(none configured — run `clawcode add-model`)";
     return models
       .map(
         (m) =>
@@ -72,7 +76,17 @@ export async function buildSystemPrompt(
     .replace("{{NODE_VERSION}}", process.version)
     .replace("{{GIT}}", gitInfo)
     .replace("{{CONFIGURED_MODELS}}", modelsList)
-    .replace("{{MEMORY}}", memory || "(no saved memory for this project yet)");
+    .replace("{{MEMORY}}", memory || "(no saved memory for this project yet)")
+    .replace(
+      "{{SKILLS_DIR}}",
+      (await loadSkillsDir())
+        .map((s) => `- **${s.name}**: ${s.description} (path: ${s.path})`)
+        .join("\n") || "(no skills loaded yet)",
+    )
+    .replace(
+      "{{MCP_SERVERS}}",
+      (await mcpManager.listServers()).join(", ") || "(no MCP servers configured)",
+    );
 }
 
 export async function buildSummaryPrompt(): Promise<string> {

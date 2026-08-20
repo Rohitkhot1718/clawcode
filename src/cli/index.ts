@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { cliCommands } from "./commands.js";
+import { addMCPServer } from "../mcp/config.js";
 export const program = new Command();
 
 program.name("clawcode").description("AI CLI tool").version("1.0.0");
@@ -32,15 +33,13 @@ program
   .requiredOption("--provider <provider>", "Provider name")
   .requiredOption("--model <model>", "Model ")
   .option("--name <name>", "Display name")
-  .option("--context <tokens>", "Context window size in tokens")
+  .option(
+    "--base-url <url>",
+    "Base URL for a custom OpenAI-compatible provider",
+  )
   .action(async (options) => {
-    const { provider, model, name, context } = options;
-    await cliCommands.addModel(
-      provider,
-      model,
-      name,
-      context ? Number(context) : undefined,
-    );
+    const { provider, model, name, baseUrl } = options;
+    await cliCommands.addModel(provider, model, name, undefined, baseUrl);
   });
 
 program
@@ -87,4 +86,31 @@ program
   .description("View current configuration")
   .action(async () => {
     await cliCommands.showConfig();
+  });
+
+program
+  .command("add-mcp")
+  .description("Add a new MCP server")
+  .requiredOption("--name <name>", "Server name")
+  .requiredOption("--command <command>", "Server command")
+  .option("--args <args>", "Space-separated server arguments")
+  .option("--env <env>", "Comma-separated KEY=VALUE environment variables")
+  .action(async (options) => {
+    const { name, command, args, env } = options;
+
+    const parsedEnv = env
+      ? Object.fromEntries(
+          (env as string)
+            .split(",")
+            .map((pair) => pair.split("=").map((s: string) => s.trim())),
+        )
+      : undefined;
+
+    await addMCPServer(name, {
+      command,
+      args: args ? (args as string).split(" ").filter(Boolean) : [],
+      env: parsedEnv,
+    });
+
+    console.log(`MCP server "${name}" added`);
   });
